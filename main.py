@@ -18,7 +18,7 @@ import requests
 app = Flask(__name__)
 
 VIDEOS_DIR = "/home/henry/APPS/YTVideos/videos"
-VERSION = "v4.61"
+VERSION = "v4.62"
 
 STYLE_DESCRIPTIONS = {
     "3D Render": "Clean, modern 3D CGI render. Smooth surfaces, precise geometry, studio-quality lighting with soft shadows. Polished and professional digital art look.",
@@ -304,7 +304,6 @@ HTML = r"""
                             <option value="flux1-dev.safetensors">Flux 1 Dev</option>
                             <option value="flux1-schnell.safetensors">Flux 1 Schnell</option>
                             <option value="flux1-schnell-fp8.safetensors">Flux 1 Schnell fp8</option>
-                            <option value="flux2_dev_fp8mixed.safetensors">Flux 2 Dev fp8</option>
                             <option value="geminiproxy">GeminiProxy</option>
                         </select>
                     </div>
@@ -350,8 +349,7 @@ HTML = r"""
                                     <option value="RealVisXL_V5.0_Lightning_fp16.safetensors">RealVisXL V5 Lightning</option>
                                     <option value="flux1-dev.safetensors">Flux 1 Dev</option>
                                     <option value="flux1-schnell-fp8.safetensors">Flux 1 Schnell fp8</option>
-                                    <option value="flux2_dev_fp8mixed.safetensors">Flux 2 Dev fp8</option>
-                                </select>
+                                        </select>
                             </div>
                             <!-- Image Style + Caption Position -->
                             <div class="form-group">
