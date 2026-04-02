@@ -448,6 +448,7 @@ HTML = r"""
             </div>
             <div id="logContent"></div>
         </div>
+        <div id="logToggle" style="display:none; position:fixed; right:0; bottom:20px; background:#333; color:#fff; padding:10px 6px; cursor:pointer; border-radius:6px 0 0 6px; font-size:14px; z-index:1000;" onclick="showLogPanel()" title="Show Activity Log">◀</div>
     </div>
     
     <script>
@@ -490,6 +491,15 @@ HTML = r"""
                 const panelEl = document.getElementById('panel-' + t);
                 if (panelEl) panelEl.style.display = t === name ? 'block' : 'none';
             });
+            const logPanel = document.getElementById('logPanel');
+            const logToggle = document.getElementById('logToggle');
+            if (name === 'prompts') {
+                if (logPanel) logPanel.style.display = 'none';
+                if (logToggle) logToggle.style.display = 'block';
+            } else {
+                if (logPanel) logPanel.style.display = 'block';
+                if (logToggle) logToggle.style.display = 'none';
+            }
             const title = document.getElementById('projectSelect').value;
             if (name === 'config') loadConfig(title);
             if (name === 'narration') loadNarration(title);
@@ -499,6 +509,13 @@ HTML = r"""
             if (name === 'thumbnail') loadThumbnail(title);
             if (name === 'browse') loadBrowse(title);
             if (name === 'play') loadPlay(title);
+        }
+
+        function showLogPanel() {
+            const logPanel = document.getElementById('logPanel');
+            const logToggle = document.getElementById('logToggle');
+            if (logPanel) logPanel.style.display = 'block';
+            if (logToggle) logToggle.style.display = 'none';
         }
 
         let _browseSubpath = '';
@@ -833,16 +850,18 @@ HTML = r"""
             const container = document.getElementById('promptsContent');
             Promise.all([
                 fetch(`/api/prompts?title=${encodeURIComponent(title)}`).then(r => r.json()),
-                fetch(`/api/clips?title=${encodeURIComponent(title)}`).then(r => r.json())
-            ]).then(([promptData, clipData]) => {
+                fetch(`/api/clips?title=${encodeURIComponent(title)}`).then(r => r.json()),
+                fetch(`/api/cref?title=${encodeURIComponent(title)}`).then(r => r.json())
+            ]).then(([promptData, clipData, crefData]) => {
                     if (!promptData.prompts || promptData.prompts.length === 0) {
                         container.innerHTML = '<p style="color:#888;">No prompts found. Run the pipeline first.</p>';
                         return;
                     }
                     const clips = clipData.clips || [];
+                    const characters = crefData.characters || [];
                     container.innerHTML = `
                         <table class="prompts-table">
-                            <thead><tr><th>#</th><th>Raw Prompt</th><th>Final Prompt</th><th>Image</th></tr></thead>
+                            <thead><tr><th>#</th><th>Raw Prompt</th><th>CREF</th><th>Final Prompt</th><th>Image</th></tr></thead>
                             <tbody>${promptData.prompts.map((p, i) => {
                                 const clipName = `clip_${String(i + 1).padStart(2, '0')}.png`;
                                 const hasClip = clips.includes(clipName);
@@ -853,9 +872,21 @@ HTML = r"""
                                             style="cursor: pointer; transition: opacity 0.2s;"
                                             title="Click to regenerate image">`
                                     : `<div style="padding:10px; color:#999; cursor:pointer;" onclick="regenerateClipImage(${i}, '${clipName}')">Click to generate</div>`;
+                                const crefCheckboxes = characters.map(c => {
+                                    const fullDesc = c.description ? `${c.name}, ${c.description}` : c.name;
+                                    const isChecked = p.prompt.includes(c.name);
+                                    return `<label style="display:block; margin:2px 0; font-size:11px; cursor:pointer;">
+                                        <input type="checkbox" 
+                                               ${isChecked ? 'checked' : ''} 
+                                               onchange="toggleCref(${i}, '${c.name.replace(/'/g, "\\'")}', '${fullDesc.replace(/'/g, "\\'")}', this.checked)"
+                                               style="margin-right:4px;">
+                                        ${c.name}
+                                    </label>`;
+                                }).join('');
                                 return `<tr>
                                     <td class="prompt-num">${i + 1}</td>
                                     <td class="prompt-sentence">${p.raw || p.sentence}</td>
+                                    <td style="white-space:nowrap; padding:8px;">${crefCheckboxes}</td>
                                     <td class="prompt-text">
                                         <textarea id="prompt-txt-${i}" style="width:100%; height:100%; min-height:185px; font-size:11px; font-family:monospace; padding:4px; margin:0; display:block; box-sizing:border-box; border:1px solid #eee; border-radius:4px; resize:none; overflow-y:auto;">${p.prompt}</textarea>
                                     </td>
@@ -865,6 +896,26 @@ HTML = r"""
                         </table>
                     `;
                 });
+        }
+
+        function toggleCref(idx, charName, fullDesc, isChecked) {
+            const textarea = document.getElementById(`prompt-txt-${idx}`);
+            if (!textarea) return;
+            let prompt = textarea.value;
+            if (isChecked) {
+                // Insert CREF after style_desc (first sentence ending with period)
+                const firstPeriod = prompt.indexOf('. ');
+                if (firstPeriod !== -1) {
+                    prompt = prompt.substring(0, firstPeriod + 2) + fullDesc + ', ' + prompt.substring(firstPeriod + 2);
+                } else {
+                    prompt = fullDesc + ', ' + prompt;
+                }
+            } else {
+                // Remove CREF description
+                const escaped = fullDesc.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                prompt = prompt.replace(new RegExp(',?' + escaped + ',?', 'g'), ',').replace(/,+/g, ',').replace(/^,\s*/, '').replace(/,\s*$/, '');
+            }
+            textarea.value = prompt;
         }
 
         function regenerateClipImage(idx, clipName) {
@@ -1753,10 +1804,13 @@ def _generate_thumbnail_image_geminiproxy(prompt, output_path):
         existing_srcs = set(json.loads(snap_val)) if snap_val else set()
 
         # Focus the input box before inserting text
-        cdp_eval(ws, """(function() {
+        cdp_eval(
+            ws,
+            """(function() {
             var el = document.querySelector('[contenteditable="true"]');
             if (el) { el.focus(); el.click(); }
-        })()""")
+        })()""",
+        )
         time.sleep(0.3)
 
         full_prompt = "generate an image of: " + prompt
@@ -1927,7 +1981,9 @@ def _generate_thumbnail_and_metadata(
         return
     p.push("Generating thumbnail image prompt...")
     style_desc = STYLE_DESCRIPTIONS.get(image_style, "")
-    style_clause = f" The image must be in {image_style} style: {style_desc}" if style_desc else ""
+    style_clause = (
+        f" The image must be in {image_style} style: {style_desc}" if style_desc else ""
+    )
     thumb_prompt_text = (
         f"Create a short, vivid image generation prompt for a YouTube thumbnail for a children's story titled '{title}'. "
         f"Describe only the visual scene — characters, colors, lighting, composition, and mood. "
@@ -2542,8 +2598,12 @@ def _run_pipeline(
             "image_model", "geminiproxy"
         )
         _generate_thumbnail_and_metadata(
-            title, project_dir, narration_text, ai_helper, thumb_image_model,
-            proj_cfg.get("image_style", "")
+            title,
+            project_dir,
+            narration_text,
+            ai_helper,
+            thumb_image_model,
+            proj_cfg.get("image_style", ""),
         )
 
         p.push("Running video generation...")
@@ -2800,6 +2860,7 @@ def save_cref():
 @app.route("/api/cref/regenerate", methods=["POST"])
 def regenerate_cref():
     import shutil
+
     data = request.json
     if not data:
         return jsonify({"status": "error", "error": "Invalid or missing JSON body"})
@@ -2830,32 +2891,81 @@ def regenerate_cref():
             if not ok:
                 return jsonify({"status": "error", "error": "GeminiProxy failed"})
             if os.path.exists(output_path) and os.path.isdir(comfy_input):
-                shutil.copy2(output_path, os.path.join(comfy_input, f"ref_{safe_name}.png"))
+                shutil.copy2(
+                    output_path, os.path.join(comfy_input, f"ref_{safe_name}.png")
+                )
         else:
             workflow = {
-                "3": {"class_type": "KSampler", "inputs": {"cfg": 2, "denoise": 1, "latent_image": ["5", 0], "model": ["4", 0], "negative": ["7", 0], "positive": ["6", 0], "sampler_name": "euler", "scheduler": "sgm_uniform", "seed": random.randint(0, 999999), "steps": 30}},
-                "4": {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": image_model}},
-                "5": {"class_type": "EmptyLatentImage", "inputs": {"width": 832, "height": 480, "batch_size": 1}},
-                "6": {"class_type": "CLIPTextEncode", "inputs": {"clip": ["4", 1], "text": prompt}},
-                "7": {"class_type": "CLIPTextEncode", "inputs": {"clip": ["4", 1], "text": "blurry, deformed, ugly, scary, dark, violent, low quality, watermark, text"}},
-                "8": {"class_type": "VAEDecode", "inputs": {"samples": ["3", 0], "vae": ["4", 2]}},
-                "9": {"class_type": "SaveImage", "inputs": {"filename_prefix": f"ref_{safe_name}", "images": ["8", 0]}},
+                "3": {
+                    "class_type": "KSampler",
+                    "inputs": {
+                        "cfg": 2,
+                        "denoise": 1,
+                        "latent_image": ["5", 0],
+                        "model": ["4", 0],
+                        "negative": ["7", 0],
+                        "positive": ["6", 0],
+                        "sampler_name": "euler",
+                        "scheduler": "sgm_uniform",
+                        "seed": random.randint(0, 999999),
+                        "steps": 30,
+                    },
+                },
+                "4": {
+                    "class_type": "CheckpointLoaderSimple",
+                    "inputs": {"ckpt_name": image_model},
+                },
+                "5": {
+                    "class_type": "EmptyLatentImage",
+                    "inputs": {"width": 832, "height": 480, "batch_size": 1},
+                },
+                "6": {
+                    "class_type": "CLIPTextEncode",
+                    "inputs": {"clip": ["4", 1], "text": prompt},
+                },
+                "7": {
+                    "class_type": "CLIPTextEncode",
+                    "inputs": {
+                        "clip": ["4", 1],
+                        "text": "blurry, deformed, ugly, scary, dark, violent, low quality, watermark, text",
+                    },
+                },
+                "8": {
+                    "class_type": "VAEDecode",
+                    "inputs": {"samples": ["3", 0], "vae": ["4", 2]},
+                },
+                "9": {
+                    "class_type": "SaveImage",
+                    "inputs": {
+                        "filename_prefix": f"ref_{safe_name}",
+                        "images": ["8", 0],
+                    },
+                },
             }
-            resp = requests.post("http://127.0.0.1:8188/prompt", json={"prompt": workflow})
+            resp = requests.post(
+                "http://127.0.0.1:8188/prompt", json={"prompt": workflow}
+            )
             resp_data = resp.json()
             if "error" in resp_data:
                 return jsonify({"status": "error", "error": resp_data["error"]})
             prompt_id = resp_data["prompt_id"]
             for _ in range(60):
                 time.sleep(3)
-                history = requests.get(f"http://127.0.0.1:8188/history/{prompt_id}").json()
+                history = requests.get(
+                    f"http://127.0.0.1:8188/history/{prompt_id}"
+                ).json()
                 if prompt_id in history:
                     for node_out in history[prompt_id].get("outputs", {}).values():
                         for img in node_out.get("images", []):
-                            src = os.path.join("/home/henry/comfy/ComfyUI/output", img["filename"])
+                            src = os.path.join(
+                                "/home/henry/comfy/ComfyUI/output", img["filename"]
+                            )
                             if os.path.exists(src):
                                 shutil.copy2(src, output_path)
-                                shutil.copy2(src, os.path.join(comfy_input, f"ref_{safe_name}.png"))
+                                shutil.copy2(
+                                    src,
+                                    os.path.join(comfy_input, f"ref_{safe_name}.png"),
+                                )
                     break
             else:
                 return jsonify({"status": "error", "error": "ComfyUI timeout"})
@@ -3000,7 +3110,9 @@ def regenerate_clip():
                 )
             shutil.rmtree(tmp_dir, ignore_errors=True)
 
-        return jsonify({"status": "ok", "prompt": gen_prompt, "image_model": image_model})
+        return jsonify(
+            {"status": "ok", "prompt": gen_prompt, "image_model": image_model}
+        )
     except Exception as e:
         return jsonify({"status": "error", "error": str(e)})
 
@@ -3025,6 +3137,7 @@ def get_thumbnail():
 @app.route("/api/video", methods=["GET"])
 def get_video():
     from flask import Response
+
     title = safe_title(request.args.get("title", ""))
     if not title:
         return "No title", 400
@@ -3049,7 +3162,9 @@ def get_video():
         resp.headers["Accept-Ranges"] = "bytes"
         resp.headers["Content-Length"] = length
         return resp
-    resp = Response(open(video_path, "rb"), 200, mimetype="video/mp4", direct_passthrough=True)
+    resp = Response(
+        open(video_path, "rb"), 200, mimetype="video/mp4", direct_passthrough=True
+    )
     resp.headers["Accept-Ranges"] = "bytes"
     resp.headers["Content-Length"] = file_size
     return resp
@@ -3122,6 +3237,7 @@ def regenerate_thumbnail():
     thumb_backup = thumb_path + ".bak"
     if os.path.exists(thumb_path):
         import shutil as _shutil
+
         _shutil.copy2(thumb_path, thumb_backup)
         os.remove(thumb_path)
 
@@ -3505,11 +3621,13 @@ def browse_project():
     if not os.path.exists(target_dir):
         return jsonify({"error": "Not found"}), 404
     files = []
-    for entry in sorted(os.scandir(target_dir), key=lambda e: (not e.is_dir(), e.name.lower())):
+    for entry in sorted(
+        os.scandir(target_dir), key=lambda e: (not e.is_dir(), e.name.lower())
+    ):
         size = ""
         if entry.is_file():
             b = entry.stat().st_size
-            size = f"{b/1024:.1f} KB" if b < 1_048_576 else f"{b/1_048_576:.1f} MB"
+            size = f"{b / 1024:.1f} KB" if b < 1_048_576 else f"{b / 1_048_576:.1f} MB"
         files.append({"name": entry.name, "is_dir": entry.is_dir(), "size": size})
     return jsonify({"files": files})
 
@@ -3535,6 +3653,7 @@ def browse_delete():
     try:
         if os.path.isdir(target):
             import shutil
+
             shutil.rmtree(target)
         else:
             os.remove(target)
@@ -3546,6 +3665,7 @@ def browse_delete():
 @app.route("/api/browse/file", methods=["GET"])
 def browse_file():
     import mimetypes
+
     title = safe_title(request.args.get("title", ""))
     subpath = request.args.get("subpath", "")
     name = os.path.basename(request.args.get("name", ""))
