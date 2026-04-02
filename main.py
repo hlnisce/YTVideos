@@ -18,7 +18,7 @@ import requests
 app = Flask(__name__)
 
 VIDEOS_DIR = "/home/henry/APPS/YTVideos/videos"
-VERSION = "v4.62"
+VERSION = "v4.84"
 
 STYLE_DESCRIPTIONS = {
     "3D Render": "Clean, modern 3D CGI render. Smooth surfaces, precise geometry, studio-quality lighting with soft shadows. Polished and professional digital art look.",
@@ -90,7 +90,8 @@ HTML = r"""
         body { font-family: Arial, sans-serif; margin: 0; background: #f5f5f5; }
         .container { display: flex; height: 100vh; }
         .main-panel { flex: 2; padding: 15px 20px; display: flex; flex-direction: column; overflow: hidden; }
-        .log-panel { flex: 1; background: #1e1e1e; color: #0f0; padding: 10px; overflow-y: auto; font-family: monospace; font-size: 10px; border-left: 3px solid #333; }
+        .log-panel { flex: 1; background: #1e1e1e; color: #0f0; padding: 10px; display: flex; flex-direction: column; font-family: monospace; font-size: 10px; border-left: 3px solid #333; overflow: hidden; }
+        #logContent { flex: 1; overflow-y: auto; }
         .log-entry { margin-bottom: 3px; padding: 2px 0; border-bottom: 1px solid #333; }
         .log-time { color: #888; }
         .log-info { color: #0f0; }
@@ -99,7 +100,7 @@ HTML = r"""
         h1 { color: #333; font-size: 20px; margin: 0 0 8px 0; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
         .btn { padding: 6px 14px; font-size: 13px; cursor: pointer; background: #007bff; color: white; border: none; border-radius: 4px; }
         .btn:hover { background: #0056b3; }
-        .tab-bar { display: flex; gap: 0; border-bottom: 2px solid #ccc; margin-bottom: 0; }
+        .tab-bar { display: flex; gap: 0; border-bottom: 2px solid #ccc; margin-bottom: 0; align-items: flex-end; }
         .tab { padding: 6px 16px; font-size: 13px; cursor: pointer; background: #e9ecef; border: 1px solid #ccc; border-bottom: none; border-radius: 4px 4px 0 0; color: #555; margin-right: 3px; }
         .tab:hover { background: #dee2e6; }
         .tab.active { background: white; color: #333; font-weight: bold; border-bottom: 2px solid white; margin-bottom: -2px; }
@@ -158,13 +159,17 @@ HTML = r"""
                 <div class="tab" id="tab-prompts" onclick="switchTab('prompts')">📝 Prompts</div>
                 <div class="tab" id="tab-clips" onclick="switchTab('clips')">🎬 Clips</div>
                 <div class="tab" id="tab-thumbnail" onclick="switchTab('thumbnail')">🖼️ Thumbnail</div>
+                <div class="tab" id="tab-browse" onclick="switchTab('browse')">📁 Browse</div>
+                <div style="flex:1;"></div>
+                <div class="tab" id="tab-play" onclick="switchTab('play')" style="display:none; background:#1a472a; color:#90ee90; border-color:#2d6a4f;">▶ Play</div>
             </div>
             <div class="tab-content" id="tabContent">
                 <!-- Config tab (default) -->
                 <div id="panel-config">
                     <div class="form-group">
                         <label>Title:</label>
-                        <input type="text" id="title">
+                        <input type="text" id="title" style="flex:1;">
+                        <button onclick="suggestTitle()" style="margin-left:6px; padding:4px 10px; background:#2a6496; color:#fff; border:none; border-radius:4px; cursor:pointer; font-size:12px; white-space:nowrap;">💡 Suggest</button>
                     </div>
                     <div class="form-group">
                         <label>Story Type:</label>
@@ -333,8 +338,8 @@ HTML = r"""
                     <div style="display:flex; gap:16px; flex-wrap:wrap;">
                         <!-- Left: image preview + regenerate -->
                         <div style="flex:1; min-width:260px;">
-                            <div id="thumbPreviewWrap" style="background:#111; border:1px solid #444; border-radius:6px; overflow:hidden; min-height:160px; display:flex; align-items:center; justify-content:center; cursor:pointer;" ondblclick="regenerateThumbnail()" title="Double-click to regenerate">
-                                <img id="thumbPreview" src="" alt="" style="max-width:100%; max-height:340px; display:none; object-fit:contain; border-radius:6px; cursor:pointer;" ondblclick="regenerateThumbnail()" title="Double-click to regenerate">
+                            <div id="thumbPreviewWrap" style="background:#111; border:1px solid #444; border-radius:6px; overflow:hidden; min-height:160px; display:flex; align-items:center; justify-content:center; cursor:pointer;" onclick="regenerateThumbnail()" title="Click to regenerate">
+                                <img id="thumbPreview" src="" alt="" style="max-width:100%; max-height:340px; display:none; object-fit:contain; border-radius:6px; cursor:pointer;" onclick="regenerateThumbnail()" title="Click to regenerate">
                                 <span id="thumbNoImage" style="color:#666; font-size:12px;">No thumbnail yet</span>
                             </div>
                         </div>
@@ -425,6 +430,14 @@ HTML = r"""
                         </div>
                     </div>
                 </div>
+                <!-- Browse tab -->
+                <div id="panel-browse" style="display:none;">
+                    <div id="browseGrid" style="display:grid; grid-template-columns:1fr; gap:2px;"></div>
+                </div>
+                <!-- Play tab -->
+                <div id="panel-play" style="display:none; text-align:center;">
+                    <video id="playVideo" controls style="max-width:100%; max-height:480px; border-radius:6px; background:#000;"></video>
+                </div>
             </div>
         </div>
 
@@ -468,12 +481,14 @@ HTML = r"""
             fetch('/api/log/clear', {method: 'POST'});
         }
         
-        const TABS = ['config', 'narration', 'cref', 'prompts', 'clips', 'thumbnail'];
+        const TABS = ['config', 'narration', 'cref', 'prompts', 'clips', 'thumbnail', 'browse', 'play'];
 
         function switchTab(name) {
             TABS.forEach(t => {
-                document.getElementById('tab-' + t).classList.toggle('active', t === name);
-                document.getElementById('panel-' + t).style.display = t === name ? 'block' : 'none';
+                const tabEl = document.getElementById('tab-' + t);
+                if (tabEl) tabEl.classList.toggle('active', t === name);
+                const panelEl = document.getElementById('panel-' + t);
+                if (panelEl) panelEl.style.display = t === name ? 'block' : 'none';
             });
             const title = document.getElementById('projectSelect').value;
             if (name === 'config') loadConfig(title);
@@ -482,6 +497,141 @@ HTML = r"""
             if (name === 'prompts') loadPrompts(title);
             if (name === 'clips') loadClips(title);
             if (name === 'thumbnail') loadThumbnail(title);
+            if (name === 'browse') loadBrowse(title);
+            if (name === 'play') loadPlay(title);
+        }
+
+        let _browseSubpath = '';
+
+        function loadBrowse(title, subpath) {
+            if (subpath === undefined) subpath = '';
+            _browseSubpath = subpath;
+            const grid = document.getElementById('browseGrid');
+            grid.innerHTML = '<div style="color:#888; font-size:12px;">Loading...</div>';
+            if (!title) { grid.innerHTML = '<div style="color:#888; font-size:12px;">No project selected.</div>'; return; }
+            let url = `/api/browse?title=${encodeURIComponent(title)}`;
+            if (subpath) url += `&subpath=${encodeURIComponent(subpath)}`;
+            fetch(url)
+                .then(r => r.json())
+                .then(data => {
+                    grid.innerHTML = '';
+                    // Up button
+                    if (subpath) {
+                        const upRow = document.createElement('div');
+                        upRow.style.cssText = 'display:flex; align-items:center; gap:8px; padding:4px 6px; border-radius:4px; background:#e8f0fe; font-size:12px; font-family:monospace; cursor:pointer;';
+                        upRow.title = 'Go up';
+                        upRow.innerHTML = '<span style="font-size:14px;">⬆️</span><span style="flex:1;">.. (up)</span>';
+                        upRow.onclick = () => {
+                            const parts = subpath.split('/').filter(Boolean);
+                            parts.pop();
+                            loadBrowse(title, parts.join('/'));
+                        };
+                        grid.appendChild(upRow);
+                    }
+                    if (!data.files || data.files.length === 0) {
+                        const empty = document.createElement('div');
+                        empty.style.cssText = 'color:#888; font-size:12px; padding:4px 6px;';
+                        empty.textContent = 'Empty folder.';
+                        grid.appendChild(empty);
+                        return;
+                    }
+                    data.files.forEach(f => {
+                        const row = document.createElement('div');
+                        row.style.cssText = 'display:flex; align-items:center; gap:8px; padding:4px 6px; border-radius:4px; background:#f8f9fa; font-size:12px; font-family:monospace;';
+                        const icon = f.is_dir ? '📁' : fileIcon(f.name);
+                        const nameSpan = document.createElement('span');
+                        nameSpan.style.cssText = 'font-size:14px;';
+                        nameSpan.textContent = icon;
+                        const labelSpan = document.createElement('span');
+                        labelSpan.style.cssText = 'flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;';
+                        labelSpan.title = f.name;
+                        labelSpan.textContent = f.name;
+                        const sizeSpan = document.createElement('span');
+                        sizeSpan.style.cssText = 'color:#888; white-space:nowrap;';
+                        sizeSpan.textContent = f.size;
+                        const delBtn = document.createElement('button');
+                        delBtn.style.cssText = 'background:none; border:none; color:#c00; cursor:pointer; font-size:13px; line-height:1; padding:0 2px;';
+                        delBtn.title = 'Delete';
+                        delBtn.textContent = '✕';
+                        delBtn.onclick = () => deleteBrowseEntry(delBtn, title, f.name, subpath);
+                        row.appendChild(nameSpan);
+                        row.appendChild(labelSpan);
+                        row.appendChild(sizeSpan);
+                        row.appendChild(delBtn);
+                        if (f.is_dir) {
+                            row.style.cursor = 'pointer';
+                            row.title = 'Click to open';
+                            row.onclick = (e) => {
+                                if (e.target === delBtn) return;
+                                const newPath = subpath ? subpath + '/' + f.name : f.name;
+                                loadBrowse(title, newPath);
+                            };
+                        } else {
+                            row.style.cursor = 'pointer';
+                            row.title = 'Click to view';
+                            row.onclick = (e) => {
+                                if (e.target === delBtn) return;
+                                openBrowseFile(title, subpath, f.name);
+                            };
+                        }
+                        grid.appendChild(row);
+                    });
+                })
+                .catch(() => { grid.innerHTML = '<div style="color:red; font-size:12px;">Failed to load.</div>'; });
+        }
+
+        function fileIcon(name) {
+            const ext = name.split('.').pop().toLowerCase();
+            const map = {mp4:'🎬', mp3:'🎵', wav:'🎵', png:'🖼️', jpg:'🖼️', jpeg:'🖼️', webp:'🖼️', txt:'📄', json:'📋', py:'🐍'};
+            return map[ext] || '📄';
+        }
+
+        function deleteBrowseEntry(btn, title, name, subpath) {
+            if (!confirm(`Delete "${name}"?`)) return;
+            fetch('/api/browse/delete', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({title, name, subpath: subpath || ''})
+            })
+            .then(r => r.json())
+            .then(d => { if (d.ok) btn.closest('div[style]').remove(); else alert(d.error); });
+        }
+
+        function openBrowseFile(title, subpath, name) {
+            const grid = document.getElementById('browseGrid');
+            const url = `/api/browse/file?title=${encodeURIComponent(title)}&subpath=${encodeURIComponent(subpath||'')}&name=${encodeURIComponent(name)}`;
+            const ext = name.split('.').pop().toLowerCase();
+            const closeBtn = `<button onclick="loadBrowse('${title.replace(/'/g,"\\'")}','${(subpath||'').replace(/'/g,"\\'")}');" style="margin-bottom:8px; padding:3px 12px; background:#555; color:#fff; border:none; border-radius:4px; cursor:pointer; font-size:12px;">✕ Close</button>`;
+            const label = `<div style="font-size:11px; color:#888; margin-bottom:6px; font-family:monospace;">${name}</div>`;
+            let viewer = '';
+            if (['png','jpg','jpeg','webp','gif'].includes(ext)) {
+                viewer = `<img src="${url}" style="max-width:100%; max-height:70vh; border-radius:4px; display:block;">`;
+            } else if (['mp4','webm'].includes(ext)) {
+                viewer = `<video src="${url}" controls autoplay style="max-width:100%; max-height:70vh; border-radius:4px; display:block;"></video>`;
+            } else if (['mp3','wav','ogg'].includes(ext)) {
+                viewer = `<audio src="${url}" controls style="width:100%; margin-top:8px;"></audio>`;
+            } else {
+                // text-based: fetch and display
+                grid.innerHTML = closeBtn + label + '<pre style="background:#f4f4f4; padding:10px; border-radius:4px; font-size:11px; overflow:auto; max-height:70vh; white-space:pre-wrap; word-break:break-all;">Loading...</pre>';
+                fetch(url).then(r => r.text()).then(text => {
+                    grid.querySelector('pre').textContent = text;
+                }).catch(() => { grid.querySelector('pre').textContent = 'Failed to load.'; });
+                return;
+            }
+            grid.innerHTML = closeBtn + label + viewer;
+        }
+
+        function loadPlay(title) {
+            if (!title) return;
+            window.open(`/api/video?title=${encodeURIComponent(title)}&t=${Date.now()}`, '_blank');
+        }
+
+        function checkPlayTab(title) {
+            const tab = document.getElementById('tab-play');
+            if (!title) { tab.style.display = 'none'; return; }
+            fetch(`/api/video/exists?title=${encodeURIComponent(title)}`)
+                .then(r => r.json())
+                .then(data => { tab.style.display = data.exists ? 'block' : 'none'; });
         }
 
         function loadThumbnail(title) {
@@ -625,6 +775,38 @@ HTML = r"""
             navigator.clipboard.writeText(text).then(() => log(`✓ ${label} copied`, 'success'));
         }
 
+        function suggestTitle() {
+            const aiHelper = document.getElementById('ai_helper').value;
+            const storyType = document.getElementById('story_type').value;
+            const btn = event.target;
+            btn.disabled = true;
+            btn.textContent = '⏳ Suggesting...';
+            document.body.style.cursor = 'wait';
+            fetch('/api/suggest-title', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ai_helper: aiHelper, story_type: storyType})
+            })
+            .then(r => r.json())
+            .then(data => {
+                btn.disabled = false;
+                btn.textContent = '💡 Suggest';
+                document.body.style.cursor = '';
+                if (data.title) {
+                    document.getElementById('title').value = data.title;
+                    log(`💡 Suggested: ${data.title}`, 'success');
+                } else {
+                    log('✗ ' + (data.error || 'No suggestion returned'), 'error');
+                }
+            })
+            .catch(e => {
+                btn.disabled = false;
+                btn.textContent = '💡 Suggest';
+                document.body.style.cursor = '';
+                log('✗ Suggest failed: ' + e.message, 'error');
+            });
+        }
+
         function loadConfig(title) {
             if (!title) return;
             fetch(`/api/config?title=${encodeURIComponent(title)}`)
@@ -667,10 +849,10 @@ HTML = r"""
                                 const imgCell = hasClip
                                     ? `<img src="/api/clip-image?title=${encodeURIComponent(title)}&name=${encodeURIComponent(clipName)}" 
                                             alt="${clipName}" 
-                                            ondblclick="regenerateClipImage(${i}, '${clipName}')"
+                                            onclick="regenerateClipImage(${i}, '${clipName}')"
                                             style="cursor: pointer; transition: opacity 0.2s;"
-                                            title="Double click to regenerate image">`
-                                    : `<div style="padding:10px; color:#999; cursor:pointer;" ondblclick="regenerateClipImage(${i}, '${clipName}')">Double click to generate</div>`;
+                                            title="Click to regenerate image">`
+                                    : `<div style="padding:10px; color:#999; cursor:pointer;" onclick="regenerateClipImage(${i}, '${clipName}')">Click to generate</div>`;
                                 return `<tr>
                                     <td class="prompt-num">${i + 1}</td>
                                     <td class="prompt-sentence">${p.raw || p.sentence}</td>
@@ -722,8 +904,8 @@ HTML = r"""
                         imgEl.src = `/api/clip-image?title=${encodeURIComponent(title)}&name=${encodeURIComponent(clipName)}&_=${Date.now()}`;
                     } else {
                         cell.innerHTML = `<img src="/api/clip-image?title=${encodeURIComponent(title)}&name=${encodeURIComponent(clipName)}&_=${Date.now()}" 
-                            alt="${clipName}" ondblclick="regenerateClipImage(${idx}, '${clipName}')"
-                            style="cursor: pointer; transition: opacity 0.2s;" title="Double click to regenerate image">`;
+                            alt="${clipName}" onclick="regenerateClipImage(${idx}, '${clipName}')"
+                            style="cursor: pointer; transition: opacity 0.2s;" title="Click to regenerate image">`;
                     }
                 } else {
                     log('✗ ' + (data.error || 'Failed to regenerate'), 'error');
@@ -755,7 +937,10 @@ HTML = r"""
                             card.querySelector('video').addEventListener('mouseenter', e => e.target.play());
                             card.querySelector('video').addEventListener('mouseleave', e => { e.target.pause(); e.target.currentTime = 0; });
                         } else {
-                            card.innerHTML = `<img src="${url}" alt="${c}"><div class="clip-label">${c}</div>`;
+                            const m = c.match(/clip_(\d+)\.png/);
+                            const idx = m ? parseInt(m[1], 10) - 1 : -1;
+                            card.innerHTML = `<img src="${url}" alt="${c}" style="cursor:pointer;" title="Click to regenerate"><div class="clip-label">${c}</div>`;
+                            if (idx >= 0) card.querySelector('img').onclick = () => regenerateClipImage(idx, c);
                         }
                         container.appendChild(card);
                     });
@@ -801,8 +986,8 @@ HTML = r"""
                         <div class="cref-card">
                             <div id="cref-img-wrap-${i}">
                                 ${c.image
-                                    ? `<img src="${c.image}" alt="${c.name}" ondblclick="regenerateCrefImage(${i}, '${c.safe_name}', '${c.name}')" style="cursor:pointer;" title="Double click to regenerate">`
-                                    : `<div class="no-image" ondblclick="regenerateCrefImage(${i}, '${c.safe_name}', '${c.name}')" style="cursor:pointer;" title="Double click to generate">No reference image yet</div>`}
+                                    ? `<img src="${c.image}" alt="${c.name}" onclick="regenerateCrefImage(${i}, '${c.safe_name}', '${c.name}')" style="cursor:pointer;" title="Double click to regenerate">`
+                                    : `<div class="no-image" onclick="regenerateCrefImage(${i}, '${c.safe_name}', '${c.name}')" style="cursor:pointer;" title="Click to generate">No reference image yet</div>`}
                             </div>
                             <div class="cref-card-header">
                                 <h4>${c.name}</h4>
@@ -866,7 +1051,7 @@ HTML = r"""
                     log(`✓ ${charName} regenerated`, 'success');
                     const wrap = document.getElementById(`cref-img-wrap-${idx}`);
                     wrap.innerHTML = `<img src="/api/ref-image?title=${encodeURIComponent(title)}&name=${encodeURIComponent(safeName)}&_=${Date.now()}"
-                        alt="${charName}" ondblclick="regenerateCrefImage(${idx}, '${safeName}', '${charName}')"
+                        alt="${charName}" onclick="regenerateCrefImage(${idx}, '${safeName}', '${charName}')"
                         style="cursor:pointer;" title="Double click to regenerate">`;
                 } else {
                     log('✗ ' + (data.error || 'Failed'), 'error');
@@ -905,6 +1090,7 @@ HTML = r"""
             .then(r => r.json())
             .then(data => {
                 log(`✓ Config saved: ${data.folder}`, 'success');
+                loadProjects(data.folder);
             })
             .catch(err => {
                 log(`✗ Error: ${err}`, 'error');
@@ -914,24 +1100,36 @@ HTML = r"""
         // Initial log
         log('Video Generator ready', 'success');
         
-        // Load projects on page load
-        fetch('/api/projects')
-            .then(r => r.json())
-            .then(projects => {
-                const select = document.getElementById('projectSelect');
-                const last = localStorage.getItem('lastProject');
-                projects.forEach(p => {
-                    const opt = document.createElement('option');
-                    opt.value = p;
-                    opt.textContent = p;
-                    select.appendChild(opt);
+        function loadProjects(selectTitle) {
+            fetch('/api/projects')
+                .then(r => r.json())
+                .then(projects => {
+                    const select = document.getElementById('projectSelect');
+                    const current = selectTitle || select.value || localStorage.getItem('lastProject');
+                    select.innerHTML = '<option value="">-- Select Project --</option>';
+                    projects.forEach(p => {
+                        const opt = document.createElement('option');
+                        opt.value = p;
+                        opt.textContent = p;
+                        select.appendChild(opt);
+                    });
+                    if (current && projects.includes(current)) {
+                        select.value = current;
+                        localStorage.setItem('lastProject', current);
+                        if (selectTitle) loadProject();
+                    }
                 });
-                if (last && projects.includes(last)) {
-                    select.value = last;
-                    log(`Loaded project: ${last}`);
-                    loadConfig(last);
-                }
-            });
+        }
+
+        // Load projects on page load
+        loadProjects();
+        const _initLast = localStorage.getItem('lastProject');
+        if (_initLast) {
+            setTimeout(() => {
+                const sel = document.getElementById('projectSelect');
+                if (sel.value === _initLast) { log(`Loaded project: ${_initLast}`); loadConfig(_initLast); checkPlayTab(_initLast); }
+            }, 300);
+        }
 
         function resetProject() {
             const title = document.getElementById('projectSelect').value;
@@ -959,6 +1157,8 @@ HTML = r"""
             if (title) {
                 localStorage.setItem('lastProject', title);
                 log(`Selected project: ${title}`);
+                checkPlayTab(title);
+                _browseSubpath = '';
                 const activeTab = document.querySelector('.tab.active').id.replace('tab-', '');
                 switchTab(activeTab);
             }
@@ -1007,6 +1207,7 @@ HTML = r"""
                             clearInterval(_pollTimer);
                             _pollTimer = null;
                             setRunning(false);
+                            checkPlayTab(document.getElementById('projectSelect').value);
                         }
                     })
                     .catch(() => {
@@ -1101,7 +1302,7 @@ def save_config():
     with open(config_path, "w") as f:
         json.dump(config, f, indent=2)
 
-    return jsonify({"status": "ok", "folder": project_dir})
+    return jsonify({"status": "ok", "folder": os.path.basename(project_dir)})
 
 
 APP_LOG = os.path.join(os.path.dirname(__file__), "app.log")
@@ -1603,54 +1804,25 @@ def _generate_thumbnail_image_geminiproxy(prompt, output_path):
             _pipeline.push("⚠ GeminiProxy: no image appeared within timeout", "error")
             return False
 
-        rect_val = cdp_eval(
+        # Fetch the image bytes directly via the src URL (avoids screenshot fallback bugs)
+        img_data_b64 = cdp_eval(
             ws,
-            f"""(function() {{
-            var imgs = document.querySelectorAll({json.dumps(img_selector)});
-            var img = null;
-            for (var i = imgs.length - 1; i >= 0; i--) {{
-                if ((imgs[i].currentSrc || imgs[i].src || '') === {json.dumps(img_src)}) {{ img = imgs[i]; break; }}
-            }}
-            if (!img) img = imgs[imgs.length - 1];
-            img.scrollIntoView({{block:'center'}});
-            var r = img.getBoundingClientRect();
-            var dpr = window.devicePixelRatio || 1;
-            var nw = img.naturalWidth || r.width;
-            return JSON.stringify({{x:r.left, y:r.top, width:r.width, height:r.height, scale:Math.max(dpr, nw/r.width)}});
+            f"""(async function() {{
+            try {{
+                var src = {json.dumps(img_src)};
+                var resp = await fetch(src);
+                var buf = await resp.arrayBuffer();
+                var bytes = new Uint8Array(buf);
+                var binary = '';
+                for (var i = 0; i < bytes.byteLength; i++) binary += String.fromCharCode(bytes[i]);
+                return btoa(binary);
+            }} catch(e) {{ return null; }}
         }})()""",
         )
-        time.sleep(0.4)
-        rect = json.loads(rect_val)
-        pid = msg_id[0]
-        msg_id[0] += 1
-        ws.send(
-            json.dumps(
-                {
-                    "id": pid,
-                    "method": "Page.captureScreenshot",
-                    "params": {
-                        "format": "png",
-                        "clip": {
-                            "x": max(0, rect["x"]),
-                            "y": max(0, rect["y"]),
-                            "width": rect["width"],
-                            "height": rect["height"],
-                            "scale": rect["scale"],
-                        },
-                    },
-                }
-            )
-        )
-        screenshot_data = None
-        for _ in range(2000):
-            msg = json.loads(ws.recv())
-            if msg.get("id") == pid:
-                screenshot_data = msg.get("result", {}).get("data")
-                break
         ws.close()
-        if screenshot_data:
+        if img_data_b64:
             with open(output_path, "wb") as f:
-                f.write(_b64.b64decode(screenshot_data))
+                f.write(_b64.b64decode(img_data_b64))
             return True
         return False
     except Exception as e:
@@ -1823,7 +1995,7 @@ def _generate_audio_and_assemble(project_dir, narration_path, voice_model, voice
         try:
             subprocess.run(
                 [
-                    "edge-tts",
+                    "/home/henry/.local/bin/edge-tts",
                     "--voice",
                     voice_model,
                     f"--rate={voice_rate}",
@@ -2007,6 +2179,8 @@ def _generate_audio_and_assemble(project_dir, narration_path, voice_model, voice
                 concat_list,
                 "-c",
                 "copy",
+                "-movflags",
+                "+faststart",
                 output_path,
             ],
             check=True,
@@ -2384,6 +2558,24 @@ def generate_narration():
     t.start()
 
     return jsonify({"status": "started"})
+
+
+@app.route("/api/suggest-title", methods=["POST"])
+def suggest_title():
+    data = request.json
+    ai_helper = data.get("ai_helper", "opencode")
+    story_type = data.get("story_type", "children_story")
+    prompt = (
+        f"Suggest one creative, catchy title for a {story_type.replace('_', ' ')}. "
+        f"Output ONLY the title, no quotes, no explanation."
+    )
+    try:
+        title = _call_ai(prompt, ai_helper, timeout=60)
+        if not title:
+            return jsonify({"error": "No title returned"})
+        return jsonify({"title": title.strip().strip('"').strip("'")})
+    except Exception as e:
+        return jsonify({"error": str(e)})
 
 
 @app.route("/api/reset", methods=["POST"])
@@ -2780,6 +2972,48 @@ def get_thumbnail():
     return send_file(thumb_path, mimetype="image/png")
 
 
+@app.route("/api/video", methods=["GET"])
+def get_video():
+    from flask import Response
+    title = safe_title(request.args.get("title", ""))
+    if not title:
+        return "No title", 400
+    video_path = os.path.join(VIDEOS_DIR, title, "output.mp4")
+    if not os.path.exists(video_path):
+        return "Not found", 404
+    file_size = os.path.getsize(video_path)
+    range_header = request.headers.get("Range")
+    if range_header:
+        byte_start, byte_end = 0, file_size - 1
+        m = re.match(r"bytes=(\d+)-(\d*)", range_header)
+        if m:
+            byte_start = int(m.group(1))
+            if m.group(2):
+                byte_end = int(m.group(2))
+        length = byte_end - byte_start + 1
+        with open(video_path, "rb") as f:
+            f.seek(byte_start)
+            data = f.read(length)
+        resp = Response(data, 206, mimetype="video/mp4", direct_passthrough=True)
+        resp.headers["Content-Range"] = f"bytes {byte_start}-{byte_end}/{file_size}"
+        resp.headers["Accept-Ranges"] = "bytes"
+        resp.headers["Content-Length"] = length
+        return resp
+    resp = Response(open(video_path, "rb"), 200, mimetype="video/mp4", direct_passthrough=True)
+    resp.headers["Accept-Ranges"] = "bytes"
+    resp.headers["Content-Length"] = file_size
+    return resp
+
+
+@app.route("/api/video/exists", methods=["GET"])
+def video_exists():
+    title = safe_title(request.args.get("title", ""))
+    if not title:
+        return jsonify({"exists": False})
+    video_path = os.path.join(VIDEOS_DIR, title, "output.mp4")
+    return jsonify({"exists": os.path.exists(video_path)})
+
+
 @app.route("/api/description", methods=["GET"])
 def get_description():
     title = safe_title(request.args.get("title", ""))
@@ -3031,7 +3265,7 @@ def _assemble_with_xfade(
             try:
                 subprocess.run(
                     [
-                        "edge-tts",
+                        "/home/henry/.local/bin/edge-tts",
                         "--voice",
                         voice_model,
                         f"--rate={voice_rate}",
@@ -3191,6 +3425,8 @@ def _assemble_with_xfade(
             f"{total_audio_dur:.3f}",
             "-pix_fmt",
             "yuv420p",
+            "-movflags",
+            "+faststart",
             output_path,
         ]
     )
@@ -3200,6 +3436,84 @@ def _assemble_with_xfade(
         p.push(f"✓ xfade output.mp4 assembled", "success")
     except Exception as e:
         p.push(f"✗ xfade assembly failed: {e}", "error")
+
+
+@app.route("/api/browse", methods=["GET"])
+def browse_project():
+    title = safe_title(request.args.get("title", ""))
+    if not title:
+        return jsonify({"error": "No title"}), 400
+    project_dir = os.path.join(VIDEOS_DIR, title)
+    # Resolve optional subpath safely
+    subpath = request.args.get("subpath", "")
+    if subpath:
+        target_dir = os.path.realpath(os.path.join(project_dir, subpath))
+        if not target_dir.startswith(os.path.realpath(project_dir)):
+            return jsonify({"error": "Invalid path"}), 400
+    else:
+        target_dir = project_dir
+    if not os.path.exists(target_dir):
+        return jsonify({"error": "Not found"}), 404
+    files = []
+    for entry in sorted(os.scandir(target_dir), key=lambda e: (not e.is_dir(), e.name.lower())):
+        size = ""
+        if entry.is_file():
+            b = entry.stat().st_size
+            size = f"{b/1024:.1f} KB" if b < 1_048_576 else f"{b/1_048_576:.1f} MB"
+        files.append({"name": entry.name, "is_dir": entry.is_dir(), "size": size})
+    return jsonify({"files": files})
+
+
+@app.route("/api/browse/delete", methods=["POST"])
+def browse_delete():
+    data = request.json
+    title = safe_title(data.get("title", ""))
+    name = os.path.basename(data.get("name", ""))
+    subpath = data.get("subpath", "")
+    if not title or not name:
+        return jsonify({"ok": False, "error": "Missing params"})
+    project_dir = os.path.join(VIDEOS_DIR, title)
+    if subpath:
+        base = os.path.realpath(os.path.join(project_dir, subpath))
+        if not base.startswith(os.path.realpath(project_dir)):
+            return jsonify({"ok": False, "error": "Invalid path"})
+        target = os.path.join(base, name)
+    else:
+        target = os.path.join(project_dir, name)
+    if not os.path.exists(target):
+        return jsonify({"ok": False, "error": "Not found"})
+    try:
+        if os.path.isdir(target):
+            import shutil
+            shutil.rmtree(target)
+        else:
+            os.remove(target)
+        return jsonify({"ok": True})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)})
+
+
+@app.route("/api/browse/file", methods=["GET"])
+def browse_file():
+    import mimetypes
+    title = safe_title(request.args.get("title", ""))
+    subpath = request.args.get("subpath", "")
+    name = os.path.basename(request.args.get("name", ""))
+    if not title or not name:
+        return "Missing params", 400
+    project_dir = os.path.realpath(os.path.join(VIDEOS_DIR, title))
+    if subpath:
+        base = os.path.realpath(os.path.join(project_dir, subpath))
+        if not base.startswith(project_dir):
+            return "Invalid path", 400
+    else:
+        base = project_dir
+    target = os.path.join(base, name)
+    if not os.path.exists(target) or not os.path.isfile(target):
+        return "Not found", 404
+    mime, _ = mimetypes.guess_type(target)
+    mime = mime or "application/octet-stream"
+    return send_file(target, mimetype=mime)
 
 
 if __name__ == "__main__":
