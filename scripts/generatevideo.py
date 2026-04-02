@@ -617,10 +617,8 @@ def main():
 
     # Get reference images — project dir only, synced into ComfyUI input
     ref_images = get_reference_images(project_dir, input_dir)
-    print(f"Found {len(ref_images)} reference images: {', '.join(ref_images)}")
 
     if not ref_images and generate_video:
-        print("Error: No reference images found (ref_*.png)")
         sys.exit(1)
 
     # Create clips directory
@@ -630,7 +628,6 @@ def main():
     print(f"{'VIDEO' if generate_video else 'IMAGE'} GENERATION PIPELINE")
     print(f"Prompts: {len(prompts)}")
     print(f"Clips to generate: {args.clips if args.clips else 'all'}")
-    print(f"Reference images: {len(ref_images)}")
     print(f"Output: {clips_dir}")
 
     # Limit number of clips if specified
