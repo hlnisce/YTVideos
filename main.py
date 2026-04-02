@@ -2088,7 +2088,9 @@ def _generate_audio_and_assemble(project_dir, narration_path, voice_model, voice
 
     clips_dir = os.path.join(project_dir, "clips")
     audio_dir = os.path.join(project_dir, "audio")
+    segments_dir = os.path.join(project_dir, "segments")
     os.makedirs(audio_dir, exist_ok=True)
+    os.makedirs(segments_dir, exist_ok=True)
 
     # --- Step 1: TTS audio per line ---
     p.push(f"Generating audio ({voice_model}, rate {voice_rate})...")
@@ -2132,14 +2134,14 @@ def _generate_audio_and_assemble(project_dir, narration_path, voice_model, voice
             continue
         num = m.group(1)
         audio_path = os.path.join(audio_dir, f"line_{num}.mp3")
-        segment_path = os.path.join(audio_dir, f"segment_{num}.mp4")
+        segment_path = os.path.join(segments_dir, f"segment_{num}.mp4")
 
         if not os.path.exists(audio_path):
             p.push(f"  ⚠ No audio for clip_{num} — skipping segment", "info")
             continue
 
         if os.path.exists(segment_path):
-            p.push(f"  segment_{num}.mp4 exists — skipping", "info")
+            p.push(f"  {os.path.basename(segment_path)} exists — skipping", "info")
             segment_files.append(segment_path)
             continue
 
@@ -2308,11 +2310,14 @@ def _generate_narration_with_claude(
     prompt = (
         f"Write a {sentence_count}-sentence {story_type_display} narration script for a children's "
         f"YouTube video titled '{title}'. Output only the story text — one sentence per "
-        f"line, no numbering, no headers, no extra commentary.\n\n"
+        f"line, no numbering, no headers, no extra commentary. "
+        f"IMPORTANT: The very last sentence of the narration must always be a SINGLE CTA asking viewers "
+        f"to like, share and subscribe. Limit this to exactly one sentence.\n\n"
         f"Then after the narration, write a section called [Prompts] and for EACH sentence above, "
         f"write a detailed image generation prompt. Each prompt should describe the scene vividly: "
         f"setting, background, lighting, camera angle (close-up, wide shot, etc.), character positions, "
-        f"mood, and colors. Make each prompt descriptive enough for image/video generation. "
+        f"mood, and colors. For the final CTA sentence, make the image prompt something appropriate "
+        f"like a 'The End' screen or a 'Thank You' card. "
         f"One prompt per line, no numbering.\n\n"
         f"Format your entire output as:\n"
         f"<narration sentences>\n\n[Prompts]\n<prompt sentences>"
@@ -2353,11 +2358,14 @@ def _generate_narration_with_opencode(
     prompt = (
         f"Write a {sentence_count}-sentence {story_type_display} narration script for a children's "
         f"YouTube video titled '{title}'. Output only the story text — one sentence per "
-        f"line, no numbering, no headers, no extra commentary.\n\n"
+        f"line, no numbering, no headers, no extra commentary. "
+        f"IMPORTANT: The very last sentence of the narration must always be a SINGLE CTA asking viewers "
+        f"to like, share and subscribe. Limit this to exactly one sentence.\n\n"
         f"Then after the narration, write a section called [Prompts] and for EACH sentence above, "
         f"write a detailed image generation prompt. Each prompt should describe the scene vividly: "
         f"setting, background, lighting, camera angle (close-up, wide shot, etc.), character positions, "
-        f"mood, and colors. Make each prompt descriptive enough for image/video generation. "
+        f"mood, and colors. For the final CTA sentence, make the image prompt something appropriate "
+        f"like a 'The End' screen or a 'Thank You' card. "
         f"One prompt per line, no numbering.\n\n"
         f"Format your entire output as:\n"
         f"<narration sentences>\n\n[Prompts]\n<prompt sentences>"
@@ -2414,11 +2422,14 @@ def _generate_narration_with_geminiproxy(
     prompt = (
         f"Write a {sentence_count}-sentence {story_type_display} narration script for a children's "
         f"YouTube video titled '{title}'. Output only the story text — one sentence per "
-        f"line, no numbering, no headers, no extra commentary.\n\n"
+        f"line, no numbering, no headers, no extra commentary. "
+        f"IMPORTANT: The very last sentence of the narration must always be a SINGLE CTA asking viewers "
+        f"to like, share and subscribe. Limit this to exactly one sentence.\n\n"
         f"Then after the narration, write a section called [Prompts] and for EACH sentence above, "
         f"write a detailed image generation prompt. Each prompt should describe the scene vividly: "
         f"setting, background, lighting, camera angle (close-up, wide shot, etc.), character positions, "
-        f"mood, and colors. Make each prompt descriptive enough for image/video generation. "
+        f"mood, and colors. For the final CTA sentence, make the image prompt something appropriate "
+        f"like a 'The End' screen or a 'Thank You' card. "
         f"One prompt per line, no numbering.\n\n"
         f"Format your entire output as:\n"
         f"<narration sentences>\n\n[Prompts]\n<prompt sentences>"
