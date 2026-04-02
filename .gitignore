@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+*.log
+videos/*/clips/
+videos/*/audio/
+videos/*/output.mp4
+videos/*/ref_*.png
+videos/*/thumbnail*.png
+videos/*/_regen_*/
