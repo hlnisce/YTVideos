@@ -619,7 +619,7 @@ def main():
     ref_images = get_reference_images(project_dir, input_dir)
     print(f"Found {len(ref_images)} reference images: {', '.join(ref_images)}")
 
-    if not ref_images:
+    if not ref_images and generate_video:
         print("Error: No reference images found (ref_*.png)")
         sys.exit(1)
 
@@ -651,8 +651,9 @@ def main():
 
         print(f"[{i + 1}/{len(prompts)}] Processing prompt {clip_num}")
 
-        matched_refs = pick_ref_images(prompt_text, ref_images, fallback=ref_images[0])
-        print(f"  Using ref(s): {', '.join(matched_refs)}")
+        matched_refs = pick_ref_images(prompt_text, ref_images, fallback=ref_images[0]) if ref_images else []
+        if matched_refs:
+            print(f"  Using ref(s): {', '.join(matched_refs)}")
 
         if generate_video:
             clip_path = generate_video_clip(

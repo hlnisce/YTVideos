@@ -18,7 +18,7 @@ import requests
 app = Flask(__name__)
 
 VIDEOS_DIR = "/home/henry/APPS/YTVideos/videos"
-VERSION = "v4.50"
+VERSION = "v4.61"
 
 STYLE_DESCRIPTIONS = {
     "3D Render": "Clean, modern 3D CGI render. Smooth surfaces, precise geometry, studio-quality lighting with soft shadows. Polished and professional digital art look.",
@@ -334,12 +334,9 @@ HTML = r"""
                     <div style="display:flex; gap:16px; flex-wrap:wrap;">
                         <!-- Left: image preview + regenerate -->
                         <div style="flex:1; min-width:260px;">
-                            <div id="thumbPreviewWrap" style="background:#111; border:1px solid #444; border-radius:6px; overflow:hidden; min-height:160px; display:flex; align-items:center; justify-content:center;">
-                                <img id="thumbPreview" src="" alt="" style="max-width:100%; max-height:340px; display:none; object-fit:contain; border-radius:6px;">
+                            <div id="thumbPreviewWrap" style="background:#111; border:1px solid #444; border-radius:6px; overflow:hidden; min-height:160px; display:flex; align-items:center; justify-content:center; cursor:pointer;" ondblclick="regenerateThumbnail()" title="Double-click to regenerate">
+                                <img id="thumbPreview" src="" alt="" style="max-width:100%; max-height:340px; display:none; object-fit:contain; border-radius:6px; cursor:pointer;" ondblclick="regenerateThumbnail()" title="Double-click to regenerate">
                                 <span id="thumbNoImage" style="color:#666; font-size:12px;">No thumbnail yet</span>
-                            </div>
-                            <div style="margin-top:8px;">
-                                <button class="btn-save" onclick="regenerateThumbnail()" style="width:100%;">🔄 Regenerate</button>
                             </div>
                         </div>
                         <!-- Right: controls -->
@@ -579,21 +576,29 @@ HTML = r"""
             if (!title) return log('Select a project first', 'error');
             const imageModel = document.getElementById('thumb_image_model').value;
             const imageStyle = document.getElementById('thumb_image_style').value;
+            const aiHelper = document.getElementById('ai_helper').value;
+            const wrap = document.getElementById('thumbPreviewWrap');
+            wrap.style.cursor = 'wait';
+            document.body.style.cursor = 'wait';
             log('Regenerating thumbnail...');
+            startPolling();
             fetch('/api/thumbnail/regenerate', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({title, image_model: imageModel, image_style: imageStyle})
+                body: JSON.stringify({title, image_model: imageModel, image_style: imageStyle, ai_helper: aiHelper})
             })
             .then(r => r.json())
             .then(data => {
+                wrap.style.cursor = 'pointer';
+                document.body.style.cursor = '';
                 if (data.status === 'ok') {
                     log('✓ Thumbnail regenerated', 'success');
                     loadThumbnail(title);
                 } else {
                     log('✗ ' + (data.error || 'Failed'), 'error');
                 }
-            });
+            })
+            .catch(() => { wrap.style.cursor = 'pointer'; document.body.style.cursor = ''; });
         }
 
         function captureThumbnail() {
@@ -1532,6 +1537,13 @@ def _generate_thumbnail_image_geminiproxy(prompt, output_path):
         snap_val = cdp_eval(ws, snap_js)
         existing_srcs = set(json.loads(snap_val)) if snap_val else set()
 
+        # Focus the input box before inserting text
+        cdp_eval(ws, """(function() {
+            var el = document.querySelector('[contenteditable="true"]');
+            if (el) { el.focus(); el.click(); }
+        })()""")
+        time.sleep(0.3)
+
         full_prompt = "generate an image of: " + prompt
         ws.send(
             json.dumps(
@@ -1590,6 +1602,7 @@ def _generate_thumbnail_image_geminiproxy(prompt, output_path):
 
         if not img_src:
             ws.close()
+            _pipeline.push("⚠ GeminiProxy: no image appeared within timeout", "error")
             return False
 
         rect_val = cdp_eval(
@@ -1643,12 +1656,12 @@ def _generate_thumbnail_image_geminiproxy(prompt, output_path):
             return True
         return False
     except Exception as e:
-        print(f"  Thumbnail GeminiProxy error: {e}")
+        _pipeline.push(f"⚠ GeminiProxy error: {e}", "error")
         return False
 
 
 def _generate_thumbnail_and_metadata(
-    title, project_dir, narration_text, ai_helper, image_model
+    title, project_dir, narration_text, ai_helper, image_model, image_style=""
 ):
     """Generate thumbnail.png and description.txt for the project."""
     p = _pipeline
@@ -1693,10 +1706,12 @@ def _generate_thumbnail_and_metadata(
         p.push("thumbnail.png already exists — skipping", "info")
         return
     p.push("Generating thumbnail image prompt...")
+    style_desc = STYLE_DESCRIPTIONS.get(image_style, "")
+    style_clause = f" The image must be in {image_style} style: {style_desc}" if style_desc else ""
     thumb_prompt_text = (
         f"Create a short, vivid image generation prompt for a YouTube thumbnail for a children's story titled '{title}'. "
         f"Describe only the visual scene — characters, colors, lighting, composition, and mood. "
-        f"Make it high-contrast and visually striking. Do not include any text or words in the image. "
+        f"Make it high-contrast and visually striking. Do not include any text or words in the image.{style_clause} "
         f"Output ONLY the image prompt."
     )
     try:
@@ -1707,7 +1722,7 @@ def _generate_thumbnail_and_metadata(
         p.push(f"⚠ Thumbnail prompt generation failed: {e}", "info")
         image_prompt = f"A colorful, vibrant scene from the children's story '{title}', high contrast, storybook illustration"
 
-    p.push(f"Thumbnail prompt: {image_prompt[:100]}...")
+    p.push(f"Thumbnail prompt: {image_prompt}")
 
     # Step 3: generate thumbnail image
     p.push(f"Generating thumbnail via {image_model}...")
@@ -1724,10 +1739,15 @@ def _generate_thumbnail_and_metadata(
 
             thumb_dir = os.path.join(project_dir, "_thumb_tmp")
             os.makedirs(thumb_dir, exist_ok=True)
-            shutil.copy2(
-                os.path.join(project_dir, "project.json"),
-                os.path.join(thumb_dir, "project.json"),
-            )
+            thumb_cfg = {}
+            if os.path.exists(os.path.join(project_dir, "project.json")):
+                with open(os.path.join(project_dir, "project.json")) as _f:
+                    thumb_cfg = json.load(_f)
+            thumb_cfg["image_model"] = image_model
+            if image_style:
+                thumb_cfg["image_style"] = image_style
+            with open(os.path.join(thumb_dir, "project.json"), "w") as _f:
+                json.dump(thumb_cfg, _f, indent=2)
             with open(os.path.join(thumb_dir, "prompts.txt"), "w") as f:
                 f.write(f"Prompt 1: {image_prompt}|||{title}\n\n")
             run_script(
@@ -2300,7 +2320,8 @@ def _run_pipeline(
             "image_model", "geminiproxy"
         )
         _generate_thumbnail_and_metadata(
-            title, project_dir, narration_text, ai_helper, thumb_image_model
+            title, project_dir, narration_text, ai_helper, thumb_image_model,
+            proj_cfg.get("image_style", "")
         )
 
         p.push("Running video generation...")
@@ -2792,6 +2813,7 @@ def regenerate_thumbnail():
     title = safe_title(data.get("title", ""))
     image_model = data.get("image_model", "geminiproxy")
     image_style = data.get("image_style", "")
+    ai_helper = data.get("ai_helper", "")
     if not title:
         return jsonify({"status": "error", "error": "No title"})
     project_dir = os.path.join(VIDEOS_DIR, title)
@@ -2804,7 +2826,8 @@ def regenerate_thumbnail():
     if os.path.exists(config_path):
         with open(config_path) as f:
             proj_cfg = json.load(f)
-    ai_helper = proj_cfg.get("ai_helper", "opencode")
+    if not ai_helper:
+        ai_helper = proj_cfg.get("ai_helper", "opencode")
     if image_style:
         proj_cfg["image_style"] = image_style
         with open(config_path, "w") as f:
@@ -2814,17 +2837,33 @@ def regenerate_thumbnail():
         narration_text = f.read()
 
     thumb_path = os.path.join(project_dir, "thumbnail.png")
+    thumb_backup = thumb_path + ".bak"
     if os.path.exists(thumb_path):
+        import shutil as _shutil
+        _shutil.copy2(thumb_path, thumb_backup)
         os.remove(thumb_path)
 
+    _pipeline.running = True
+    _pipeline.logs.clear()
     try:
         _generate_thumbnail_and_metadata(
-            title, project_dir, narration_text, ai_helper, image_model
+            title, project_dir, narration_text, ai_helper, image_model, image_style
         )
+        _pipeline.running = False
         if os.path.exists(thumb_path):
+            if os.path.exists(thumb_backup):
+                os.remove(thumb_backup)
             return jsonify({"status": "ok"})
+        _pipeline.running = False
+        if os.path.exists(thumb_backup):
+            _shutil.copy2(thumb_backup, thumb_path)
+            os.remove(thumb_backup)
         return jsonify({"status": "error", "error": "Thumbnail not generated"})
     except Exception as e:
+        _pipeline.running = False
+        if os.path.exists(thumb_backup):
+            _shutil.copy2(thumb_backup, thumb_path)
+            os.remove(thumb_backup)
         return jsonify({"status": "error", "error": str(e)})
 
 
