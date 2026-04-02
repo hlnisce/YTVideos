@@ -1,0 +1,8 @@
+CHARACTER REFERENCE (CREF)
+========================================
+
+Little Red Riding Hood, a young girl with curly brown hair, sparkling blue eyes, fair skin, wearing a bright red velvet hooded cloak over a simple cotton dress|girl
+Mother, a woman with dark hair tied in a bun, warm brown eyes, tan skin, wearing a green linen apron over a cream-colored gown|mother, woman, man
+Grandmother, an elderly woman with silver hair, gentle grey eyes, pale wrinkled skin, wearing a floral nightgown and a white lacy nightcap|grandmother
+Wolf, a large predatory canine with thick grey fur, glowing amber eyes, sharp white teeth, and a long bushy tail|wolf
+Woodcutter, a muscular man with a thick black beard, intense grey eyes, weathered sun-browned skin, wearing a red flannel shirt and sturdy brown trousers|woodcutter

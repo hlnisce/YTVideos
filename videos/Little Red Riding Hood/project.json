@@ -1,0 +1,21 @@
+{
+  "title": "Little Red Riding Hood",
+  "story_type": "children_story",
+  "image_style": "Cartoon Reality",
+  "voice_model": "en-US-AnaNeural",
+  "voice_rate": "-20%",
+  "video_model": "wan2.1_i2v_480p_14B_fp8_scaled.safetensors",
+  "clip_count": 36,
+  "ai_helper": "geminiproxy",
+  "created": "2026-03-31",
+  "generate_video": false,
+  "image_model": "flux1-dev.safetensors",
+  "thumb_caption_position": "top",
+  "thumb_font_name": "Comic Sans MS",
+  "thumb_font_size": 1.8,
+  "thumb_bg_opacity": 21,
+  "thumb_shadow": 3,
+  "thumb_image_model": "geminiproxy",
+  "transition_style": "pan_up",
+  "transition_duration": 1
+}

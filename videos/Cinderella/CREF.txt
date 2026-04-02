@@ -1,0 +1,10 @@
+CHARACTER REFERENCE (CREF)
+========================================
+
+Cinderella, a young woman with delicate features, long blonde hair, bright blue eyes, fair skin, wearing either a tattered old dress with wooden shoes or a shimmering blue gown with sparkling glass slippers|
+Stepmother, a stern middle-aged woman with sharp features, dark hair, cruel eyes, pale skin, wearing fine dark clothing|
+Stepsisters, two plain-featured women with styled hair, jealous expressions, wearing sparkly dresses and adorned hair accessories|
+Mice, small grey mice with bright black eyes, tiny whiskers, and soft grey fur|
+King, an elderly man with regal bearing, white hair, wise eyes, wearing royal robes and a golden crown|king
+Prince, a handsome young man with noble features, dark hair, gentle eyes, wearing princely attire|prince
+Fairy Godmother, a kind elderly woman with twinkling eyes, silver hair, wearing a sparkly gown and carrying a magic wand|fairy godmother, fairy
