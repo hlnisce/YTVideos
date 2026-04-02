@@ -18,7 +18,7 @@ import requests
 app = Flask(__name__)
 
 VIDEOS_DIR = "/home/henry/APPS/YTVideos/videos"
-VERSION = "v4.84"
+VERSION = "v4.86"
 
 STYLE_DESCRIPTIONS = {
     "3D Render": "Clean, modern 3D CGI render. Smooth surfaces, precise geometry, studio-quality lighting with soft shadows. Polished and professional digital art look.",
@@ -871,11 +871,24 @@ HTML = r"""
             const title = document.getElementById('projectSelect').value;
             if (!title) return log('Select a project first', 'error');
             const textarea = document.getElementById(`prompt-txt-${idx}`);
-            if (!textarea) return log('Prompt not found', 'error');
+            if (!textarea) {
+                // Prompts tab not loaded — fetch prompt from API then proceed
+                fetch(`/api/prompts?title=${encodeURIComponent(title)}`)
+                    .then(r => r.json())
+                    .then(data => {
+                        const p = data.prompts && data.prompts[idx];
+                        if (!p || !p.prompt) return log('Prompt not found', 'error');
+                        _doRegenerateClip(title, idx, clipName, p.prompt.trim(), null);
+                    })
+                    .catch(() => log('Failed to fetch prompt', 'error'));
+                return;
+            }
             const editedPrompt = textarea.value.trim();
             if (!editedPrompt) return log('Prompt cannot be empty', 'error');
+            _doRegenerateClip(title, idx, clipName, editedPrompt, document.getElementById(`prompt-img-cell-${idx}`));
+        }
 
-            const cell = document.getElementById(`prompt-img-cell-${idx}`);
+        function _doRegenerateClip(title, idx, clipName, prompt, cell) {
             let _waitStyle = document.getElementById('_waitCursorStyle');
             if (!_waitStyle) {
                 _waitStyle = document.createElement('style');
@@ -888,7 +901,7 @@ HTML = r"""
             fetch('/api/clip/regenerate', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({title, clip_name: clipName, prompt: editedPrompt, index: idx})
+                body: JSON.stringify({title, clip_name: clipName, prompt, index: idx})
             })
             .then(r => {
                 if (!r.ok) return r.text().then(t => { throw new Error(`Server error ${r.status}: ${t.substring(0, 200)}`); });
@@ -899,14 +912,17 @@ HTML = r"""
                 if (data.status === 'ok') {
                     if (data.prompt) log(data.prompt);
                     log('✓ Image regenerated', 'success');
-                    const imgEl = cell.querySelector('img');
-                    if (imgEl) {
-                        imgEl.src = `/api/clip-image?title=${encodeURIComponent(title)}&name=${encodeURIComponent(clipName)}&_=${Date.now()}`;
-                    } else {
-                        cell.innerHTML = `<img src="/api/clip-image?title=${encodeURIComponent(title)}&name=${encodeURIComponent(clipName)}&_=${Date.now()}" 
-                            alt="${clipName}" onclick="regenerateClipImage(${idx}, '${clipName}')"
-                            style="cursor: pointer; transition: opacity 0.2s;" title="Click to regenerate image">`;
+                    const newSrc = `/api/clip-image?title=${encodeURIComponent(title)}&name=${encodeURIComponent(clipName)}&_=${Date.now()}`;
+                    // Update prompts-table cell if present
+                    if (cell) {
+                        const imgEl = cell.querySelector('img');
+                        if (imgEl) imgEl.src = newSrc;
+                        else cell.innerHTML = `<img src="${newSrc}" alt="${clipName}" onclick="regenerateClipImage(${idx}, '${clipName}')" style="cursor:pointer;" title="Click to regenerate image">`;
                     }
+                    // Update clips grid card if present
+                    document.querySelectorAll('.clip-card img').forEach(img => {
+                        if (img.alt === clipName) img.src = newSrc;
+                    });
                 } else {
                     log('✗ ' + (data.error || 'Failed to regenerate'), 'error');
                 }
@@ -1804,25 +1820,59 @@ def _generate_thumbnail_image_geminiproxy(prompt, output_path):
             _pipeline.push("⚠ GeminiProxy: no image appeared within timeout", "error")
             return False
 
-        # Fetch the image bytes directly via the src URL (avoids screenshot fallback bugs)
-        img_data_b64 = cdp_eval(
+        # Locate the exact image element and screenshot it
+        rect_val = cdp_eval(
             ws,
-            f"""(async function() {{
-            try {{
-                var src = {json.dumps(img_src)};
-                var resp = await fetch(src);
-                var buf = await resp.arrayBuffer();
-                var bytes = new Uint8Array(buf);
-                var binary = '';
-                for (var i = 0; i < bytes.byteLength; i++) binary += String.fromCharCode(bytes[i]);
-                return btoa(binary);
-            }} catch(e) {{ return null; }}
+            f"""(function() {{
+            var imgs = document.querySelectorAll({json.dumps(img_selector)});
+            var img = null;
+            for (var i = imgs.length - 1; i >= 0; i--) {{
+                if ((imgs[i].currentSrc || imgs[i].src || '') === {json.dumps(img_src)}) {{ img = imgs[i]; break; }}
+            }}
+            if (!img) return null;
+            img.scrollIntoView({{block:'center'}});
+            var r = img.getBoundingClientRect();
+            var dpr = window.devicePixelRatio || 1;
+            var nw = img.naturalWidth || r.width;
+            return JSON.stringify({{x:r.left, y:r.top, width:r.width, height:r.height, scale:Math.max(dpr, nw/r.width)}});
         }})()""",
         )
+        if not rect_val:
+            ws.close()
+            _pipeline.push("⚠ GeminiProxy: could not locate image element", "error")
+            return False
+        time.sleep(0.4)
+        rect = json.loads(rect_val)
+        pid = msg_id[0]
+        msg_id[0] += 1
+        ws.send(
+            json.dumps(
+                {
+                    "id": pid,
+                    "method": "Page.captureScreenshot",
+                    "params": {
+                        "format": "png",
+                        "clip": {
+                            "x": max(0, rect["x"]),
+                            "y": max(0, rect["y"]),
+                            "width": rect["width"],
+                            "height": rect["height"],
+                            "scale": rect["scale"],
+                        },
+                    },
+                }
+            )
+        )
+        screenshot_data = None
+        for _ in range(2000):
+            msg = json.loads(ws.recv())
+            if msg.get("id") == pid:
+                screenshot_data = msg.get("result", {}).get("data")
+                break
         ws.close()
-        if img_data_b64:
+        if screenshot_data:
             with open(output_path, "wb") as f:
-                f.write(_b64.b64decode(img_data_b64))
+                f.write(_b64.b64decode(screenshot_data))
             return True
         return False
     except Exception as e:
