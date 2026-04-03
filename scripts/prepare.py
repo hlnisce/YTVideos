@@ -1031,53 +1031,128 @@ def generate_reference_images(
                     return
 
             input_dir = "/home/henry/comfy/ComfyUI/input"
-            workflow = {
-                "3": {
-                    "class_type": "KSampler",
-                    "inputs": {
-                        "cfg": 2,
-                        "denoise": 1,
-                        "latent_image": ["5", 0],
-                        "model": ["4", 0],
-                        "negative": ["7", 0],
-                        "positive": ["6", 0],
-                        "sampler_name": "euler",
-                        "scheduler": "sgm_uniform",
-                        "seed": 12345,
-                        "steps": 30,
+
+            def _is_flux(m):
+                return "flux" in m.lower()
+
+            def _is_flux2(m):
+                return "flux2" in m.lower()
+
+            if _is_flux(image_model):
+                vae = (
+                    "flux2-vae.safetensors"
+                    if _is_flux2(image_model)
+                    else "ae.safetensors"
+                )
+                clip2 = (
+                    "mistral_3_small_flux2_bf16.safetensors"
+                    if _is_flux2(image_model)
+                    else "t5xxl_fp8_e4m3fn.safetensors"
+                )
+                workflow = {
+                    "1": {
+                        "class_type": "UNETLoader",
+                        "inputs": {
+                            "unet_name": image_model,
+                            "weight_dtype": "fp8_e4m3fn",
+                        },
                     },
-                },
-                "4": {
-                    "class_type": "CheckpointLoaderSimple",
-                    "inputs": {"ckpt_name": image_model},
-                },
-                "5": {
-                    "class_type": "EmptyLatentImage",
-                    "inputs": {"width": 832, "height": 480, "batch_size": 1},
-                },
-                "6": {
-                    "class_type": "CLIPTextEncode",
-                    "inputs": {"clip": ["4", 1], "text": prompt},
-                },
-                "7": {
-                    "class_type": "CLIPTextEncode",
-                    "inputs": {
-                        "clip": ["4", 1],
-                        "text": "blurry, deformed, ugly, scary, dark, violent, low quality, watermark, text",
+                    "2": {
+                        "class_type": "DualCLIPLoader",
+                        "inputs": {
+                            "clip_name1": "clip_l.safetensors",
+                            "clip_name2": clip2,
+                            "type": "flux",
+                        },
                     },
-                },
-                "8": {
-                    "class_type": "VAEDecode",
-                    "inputs": {"samples": ["3", 0], "vae": ["4", 2]},
-                },
-                "9": {
-                    "class_type": "SaveImage",
-                    "inputs": {
-                        "filename_prefix": f"ref_{safe_name}",
-                        "images": ["8", 0],
+                    "3": {"class_type": "VAELoader", "inputs": {"vae_name": vae}},
+                    "4": {
+                        "class_type": "CLIPTextEncode",
+                        "inputs": {"clip": ["2", 0], "text": prompt},
                     },
-                },
-            }
+                    "5": {
+                        "class_type": "CLIPTextEncode",
+                        "inputs": {"clip": ["2", 0], "text": ""},
+                    },
+                    "6": {
+                        "class_type": "EmptySD3LatentImage",
+                        "inputs": {"width": 832, "height": 480, "batch_size": 1},
+                    },
+                    "7": {
+                        "class_type": "KSampler",
+                        "inputs": {
+                            "model": ["1", 0],
+                            "positive": ["4", 0],
+                            "negative": ["5", 0],
+                            "latent_image": ["6", 0],
+                            "cfg": 1,
+                            "denoise": 1,
+                            "seed": 12345,
+                            "steps": 20,
+                            "sampler_name": "euler",
+                            "scheduler": "simple",
+                        },
+                    },
+                    "8": {
+                        "class_type": "VAEDecode",
+                        "inputs": {"samples": ["7", 0], "vae": ["3", 0]},
+                    },
+                    "9": {
+                        "class_type": "SaveImage",
+                        "inputs": {
+                            "filename_prefix": f"ref_{safe_name}",
+                            "images": ["8", 0],
+                        },
+                    },
+                }
+            else:
+                workflow = {
+                    "3": {
+                        "class_type": "KSampler",
+                        "inputs": {
+                            "cfg": 2,
+                            "denoise": 1,
+                            "latent_image": ["5", 0],
+                            "model": ["4", 0],
+                            "negative": ["7", 0],
+                            "positive": ["6", 0],
+                            "sampler_name": "euler",
+                            "scheduler": "sgm_uniform",
+                            "seed": 12345,
+                            "steps": 30,
+                        },
+                    },
+                    "4": {
+                        "class_type": "CheckpointLoaderSimple",
+                        "inputs": {"ckpt_name": image_model},
+                    },
+                    "5": {
+                        "class_type": "EmptyLatentImage",
+                        "inputs": {"width": 832, "height": 480, "batch_size": 1},
+                    },
+                    "6": {
+                        "class_type": "CLIPTextEncode",
+                        "inputs": {"clip": ["4", 1], "text": prompt},
+                    },
+                    "7": {
+                        "class_type": "CLIPTextEncode",
+                        "inputs": {
+                            "clip": ["4", 1],
+                            "text": "blurry, deformed, ugly, scary, dark, violent, low quality, watermark, text",
+                        },
+                    },
+                    "8": {
+                        "class_type": "VAEDecode",
+                        "inputs": {"samples": ["3", 0], "vae": ["4", 2]},
+                    },
+                    "9": {
+                        "class_type": "SaveImage",
+                        "inputs": {
+                            "filename_prefix": f"ref_{safe_name}",
+                            "images": ["8", 0],
+                        },
+                    },
+                }
 
             try:
                 resp = requests.post(f"{COMFYUI_URL}/prompt", json={"prompt": workflow})

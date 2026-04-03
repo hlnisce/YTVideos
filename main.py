@@ -292,6 +292,7 @@ HTML = r"""
                             <option value="opencode">OpenCode</option>
                             <option value="claude">Claude</option>
                             <option value="geminiproxy">GeminiProxy</option>
+                            <option value="google">Google</option>
                         </select>
                     </div>
                     <div class="form-group">
@@ -1636,6 +1637,55 @@ def _call_ai(prompt, ai_helper, timeout=120):
             raise RuntimeError("GeminiProxy: timed out waiting for response")
         return reply.strip()
 
+    if ai_helper == "google":
+        from google import genai
+        from google.genai import types
+
+        api_key = os.environ.get("GOOGLE_API_KEY")
+        if not api_key:
+            try:
+                import importlib.util
+
+                _spec = importlib.util.spec_from_file_location(
+                    "api_keys",
+                    "/home/henry/APPS/ContentCreator/Imager/core/api_keys.py",
+                )
+                _mod = importlib.util.module_from_spec(_spec)
+                _spec.loader.exec_module(_mod)
+                api_key = _mod.GOOGLE_API_KEY
+            except Exception:
+                raise RuntimeError(
+                    "GOOGLE_API_KEY environment variable not set and ContentCreator api_keys.py not found"
+                )
+
+        client = genai.Client(api_key=api_key)
+        response = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                temperature=0.7,
+                safety_settings=[
+                    types.SafetySetting(
+                        category=types.HarmCategory.HARM_CATEGORY_HARASSMENT,
+                        threshold=types.HarmBlockThreshold.BLOCK_NONE,
+                    ),
+                    types.SafetySetting(
+                        category=types.HarmCategory.HARM_CATEGORY_HATE_SPEECH,
+                        threshold=types.HarmBlockThreshold.BLOCK_NONE,
+                    ),
+                    types.SafetySetting(
+                        category=types.HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT,
+                        threshold=types.HarmBlockThreshold.BLOCK_NONE,
+                    ),
+                    types.SafetySetting(
+                        category=types.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
+                        threshold=types.HarmBlockThreshold.BLOCK_NONE,
+                    ),
+                ],
+            ),
+        )
+        return response.text.strip()
+
     # Default: opencode
     import subprocess as _sp
 
@@ -2568,6 +2618,94 @@ def _generate_narration_with_geminiproxy(
     return prompt
 
 
+def _generate_narration_with_google(
+    title, story_type, narration_path, sentence_count=30
+):
+    """Generate narration.txt and RawPrompt.txt using Google GenAI SDK. Returns prompt or raises."""
+    from google import genai
+    from google.genai import types
+
+    api_key = os.environ.get("GOOGLE_API_KEY")
+    if not api_key:
+        try:
+            import importlib.util
+
+            _spec = importlib.util.spec_from_file_location(
+                "api_keys", "/home/henry/APPS/ContentCreator/Imager/core/api_keys.py"
+            )
+            _mod = importlib.util.module_from_spec(_spec)
+            _spec.loader.exec_module(_mod)
+            api_key = _mod.GOOGLE_API_KEY
+        except Exception:
+            raise RuntimeError(
+                "GOOGLE_API_KEY environment variable not set and ContentCreator api_keys.py not found"
+            )
+
+    project_dir = os.path.dirname(narration_path)
+    rawprompt_path = os.path.join(project_dir, "RawPrompt.txt")
+    story_type_display = story_type.replace("_", " ").title()
+    prompt = (
+        f"Write a {sentence_count}-sentence {story_type_display} narration script for a children's "
+        f"YouTube video titled '{title}'. Output only the story text — one sentence per "
+        f"line, no numbering, no headers, no extra commentary. "
+        f"IMPORTANT: The very last sentence of the narration must always be a SINGLE CTA asking viewers "
+        f"to like, share and subscribe. Limit this to exactly one sentence.\n\n"
+        f"Then after the narration, write a section called [Prompts] and for EACH sentence above, "
+        f"write a detailed image generation prompt. Each prompt should describe the scene vividly: "
+        f"setting, background, lighting, camera angle (close-up, wide shot, etc.), character positions, "
+        f"mood, and colors. For the final CTA sentence, make the image prompt something appropriate "
+        f"like a 'The End' screen or a 'Thank You' card. "
+        f"One prompt per line, no numbering.\n\n"
+        f"Format your entire output as:\n"
+        f"<narration sentences>\n\n[Prompts]\n<prompt sentences>"
+    )
+
+    client = genai.Client(api_key=api_key)
+    response = client.models.generate_content(
+        model="gemini-2.5-flash",
+        contents=prompt,
+        config=types.GenerateContentConfig(
+            temperature=0.7,
+            safety_settings=[
+                types.SafetySetting(
+                    category=types.HarmCategory.HARM_CATEGORY_HARASSMENT,
+                    threshold=types.HarmBlockThreshold.BLOCK_NONE,
+                ),
+                types.SafetySetting(
+                    category=types.HarmCategory.HARM_CATEGORY_HATE_SPEECH,
+                    threshold=types.HarmBlockThreshold.BLOCK_NONE,
+                ),
+                types.SafetySetting(
+                    category=types.HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT,
+                    threshold=types.HarmBlockThreshold.BLOCK_NONE,
+                ),
+                types.SafetySetting(
+                    category=types.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
+                    threshold=types.HarmBlockThreshold.BLOCK_NONE,
+                ),
+            ],
+        ),
+    )
+    full_content = response.text.strip()
+    if not full_content:
+        raise RuntimeError("Google returned empty reply")
+
+    if "[Prompts]" in full_content:
+        parts = full_content.split("[Prompts]", 1)
+        narration_content = parts[0].strip()
+        prompts_content = parts[1].strip()
+    else:
+        narration_content = full_content
+        prompts_content = ""
+
+    with open(narration_path, "w") as f:
+        f.write(narration_content + "\n")
+    if prompts_content:
+        with open(rawprompt_path, "w") as f:
+            f.write(prompts_content + "\n")
+    return prompt
+
+
 def _run_pipeline(
     title, project_dir, narration_path, story_type, ai_helper, sentence_count=30
 ):
@@ -2586,6 +2724,10 @@ def _run_pipeline(
                 )
             elif ai_helper == "geminiproxy":
                 prompt = _generate_narration_with_geminiproxy(
+                    title, story_type, narration_path, sentence_count
+                )
+            elif ai_helper == "google":
+                prompt = _generate_narration_with_google(
                     title, story_type, narration_path, sentence_count
                 )
             else:
@@ -2906,53 +3048,117 @@ def regenerate_cref():
                     output_path, os.path.join(comfy_input, f"ref_{safe_name}.png")
                 )
         else:
-            workflow = {
-                "3": {
-                    "class_type": "KSampler",
-                    "inputs": {
-                        "cfg": 2,
-                        "denoise": 1,
-                        "latent_image": ["5", 0],
-                        "model": ["4", 0],
-                        "negative": ["7", 0],
-                        "positive": ["6", 0],
-                        "sampler_name": "euler",
-                        "scheduler": "sgm_uniform",
-                        "seed": random.randint(0, 999999),
-                        "steps": 30,
+
+            def _is_flux(m):
+                return "flux" in m.lower()
+
+            if _is_flux(image_model):
+                clip2 = "t5xxl_fp8_e4m3fn.safetensors"
+                vae = "ae.safetensors"
+                workflow = {
+                    "1": {
+                        "class_type": "UNETLoader",
+                        "inputs": {
+                            "unet_name": image_model,
+                            "weight_dtype": "fp8_e4m3fn",
+                        },
                     },
-                },
-                "4": {
-                    "class_type": "CheckpointLoaderSimple",
-                    "inputs": {"ckpt_name": image_model},
-                },
-                "5": {
-                    "class_type": "EmptyLatentImage",
-                    "inputs": {"width": 832, "height": 480, "batch_size": 1},
-                },
-                "6": {
-                    "class_type": "CLIPTextEncode",
-                    "inputs": {"clip": ["4", 1], "text": prompt},
-                },
-                "7": {
-                    "class_type": "CLIPTextEncode",
-                    "inputs": {
-                        "clip": ["4", 1],
-                        "text": "blurry, deformed, ugly, scary, dark, violent, low quality, watermark, text",
+                    "2": {
+                        "class_type": "DualCLIPLoader",
+                        "inputs": {
+                            "clip_name1": "clip_l.safetensors",
+                            "clip_name2": clip2,
+                            "type": "flux",
+                        },
                     },
-                },
-                "8": {
-                    "class_type": "VAEDecode",
-                    "inputs": {"samples": ["3", 0], "vae": ["4", 2]},
-                },
-                "9": {
-                    "class_type": "SaveImage",
-                    "inputs": {
-                        "filename_prefix": f"ref_{safe_name}",
-                        "images": ["8", 0],
+                    "3": {"class_type": "VAELoader", "inputs": {"vae_name": vae}},
+                    "4": {
+                        "class_type": "CLIPTextEncode",
+                        "inputs": {"clip": ["2", 0], "text": prompt},
                     },
-                },
-            }
+                    "5": {
+                        "class_type": "CLIPTextEncode",
+                        "inputs": {"clip": ["2", 0], "text": ""},
+                    },
+                    "6": {
+                        "class_type": "EmptySD3LatentImage",
+                        "inputs": {"width": 832, "height": 480, "batch_size": 1},
+                    },
+                    "7": {
+                        "class_type": "KSampler",
+                        "inputs": {
+                            "model": ["1", 0],
+                            "positive": ["4", 0],
+                            "negative": ["5", 0],
+                            "latent_image": ["6", 0],
+                            "cfg": 1,
+                            "denoise": 1,
+                            "seed": random.randint(0, 2**32 - 1),
+                            "steps": 20,
+                            "sampler_name": "euler",
+                            "scheduler": "simple",
+                        },
+                    },
+                    "8": {
+                        "class_type": "VAEDecode",
+                        "inputs": {"samples": ["7", 0], "vae": ["3", 0]},
+                    },
+                    "9": {
+                        "class_type": "SaveImage",
+                        "inputs": {
+                            "filename_prefix": f"ref_{safe_name}",
+                            "images": ["8", 0],
+                        },
+                    },
+                }
+            else:
+                workflow = {
+                    "3": {
+                        "class_type": "KSampler",
+                        "inputs": {
+                            "cfg": 2,
+                            "denoise": 1,
+                            "latent_image": ["5", 0],
+                            "model": ["4", 0],
+                            "negative": ["7", 0],
+                            "positive": ["6", 0],
+                            "sampler_name": "euler",
+                            "scheduler": "sgm_uniform",
+                            "seed": random.randint(0, 999999),
+                            "steps": 30,
+                        },
+                    },
+                    "4": {
+                        "class_type": "CheckpointLoaderSimple",
+                        "inputs": {"ckpt_name": image_model},
+                    },
+                    "5": {
+                        "class_type": "EmptyLatentImage",
+                        "inputs": {"width": 832, "height": 480, "batch_size": 1},
+                    },
+                    "6": {
+                        "class_type": "CLIPTextEncode",
+                        "inputs": {"clip": ["4", 1], "text": prompt},
+                    },
+                    "7": {
+                        "class_type": "CLIPTextEncode",
+                        "inputs": {
+                            "clip": ["4", 1],
+                            "text": "blurry, deformed, ugly, scary, dark, violent, low quality, watermark, text",
+                        },
+                    },
+                    "8": {
+                        "class_type": "VAEDecode",
+                        "inputs": {"samples": ["3", 0], "vae": ["4", 2]},
+                    },
+                    "9": {
+                        "class_type": "SaveImage",
+                        "inputs": {
+                            "filename_prefix": f"ref_{safe_name}",
+                            "images": ["8", 0],
+                        },
+                    },
+                }
             resp = requests.post(
                 "http://127.0.0.1:8188/prompt", json={"prompt": workflow}
             )

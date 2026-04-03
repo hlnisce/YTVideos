@@ -354,15 +354,13 @@ def _build_flux_workflow(prompt_text, output_prefix):
         },
         "3": {"class_type": "VAELoader", "inputs": {"vae_name": vae}},
         "4": {
-            "class_type": "CLIPTextEncodeFlux",
-            "inputs": {
-                "clip": ["2", 0],
-                "clip_l": prompt_text,
-                "t5xxl": prompt_text,
-                "guidance": 3.5,
-            },
+            "class_type": "CLIPTextEncode",
+            "inputs": {"clip": ["2", 0], "text": prompt_text},
         },
-        "5": {"class_type": "CLIPTextEncode", "inputs": {"clip": ["2", 0], "text": ""}},
+        "5": {
+            "class_type": "CLIPTextEncode",
+            "inputs": {"clip": ["2", 0], "text": ""},
+        },
         "6": {
             "class_type": "EmptySD3LatentImage",
             "inputs": {"width": VIDEO_WIDTH, "height": VIDEO_HEIGHT, "batch_size": 1},
@@ -408,22 +406,38 @@ def generate_image_clip_geminiproxy(prompt_text, clip_number, output_dir):
 
     try:
         resp = requests.get(f"http://localhost:{cdp_port}/json", timeout=3)
-        tabs = [t for t in resp.json() if t.get("type") == "page" and tab_url in t.get("url", "")]
+        tabs = [
+            t
+            for t in resp.json()
+            if t.get("type") == "page" and tab_url in t.get("url", "")
+        ]
         if not tabs:
-            print(f"  GeminiProxy: no tab found for {tab_url} — open it and log in first")
+            print(
+                f"  GeminiProxy: no tab found for {tab_url} — open it and log in first"
+            )
             return None
 
         tab = tabs[0]
         ws_url = tab["webSocketDebuggerUrl"]
-        requests.get(f"http://localhost:{cdp_port}/json/activate/{tab['id']}", timeout=3)
+        requests.get(
+            f"http://localhost:{cdp_port}/json/activate/{tab['id']}", timeout=3
+        )
         time.sleep(0.5)
 
         msg_id = [1]
 
         def cdp_eval(ws, js):
-            pid = msg_id[0]; msg_id[0] += 1
-            ws.send(json.dumps({"id": pid, "method": "Runtime.evaluate",
-                                 "params": {"expression": js, "awaitPromise": True}}))
+            pid = msg_id[0]
+            msg_id[0] += 1
+            ws.send(
+                json.dumps(
+                    {
+                        "id": pid,
+                        "method": "Runtime.evaluate",
+                        "params": {"expression": js, "awaitPromise": True},
+                    }
+                )
+            )
             deadline = time.monotonic() + 30
             while time.monotonic() < deadline:
                 msg = json.loads(ws.recv())
@@ -440,15 +454,37 @@ def generate_image_clip_geminiproxy(prompt_text, clip_number, output_dir):
         print(f"  Existing images before prompt: {len(existing_srcs)}", flush=True)
 
         full_prompt = "generate an image of: " + prompt_text
-        ws.send(json.dumps({"id": msg_id[0], "method": "Input.insertText", "params": {"text": full_prompt}}))
-        ws.recv(); msg_id[0] += 1
+        ws.send(
+            json.dumps(
+                {
+                    "id": msg_id[0],
+                    "method": "Input.insertText",
+                    "params": {"text": full_prompt},
+                }
+            )
+        )
+        ws.recv()
+        msg_id[0] += 1
         time.sleep(0.2)
 
         for ev in ("keyDown", "keyUp"):
-            ws.send(json.dumps({"id": msg_id[0], "method": "Input.dispatchKeyEvent",
-                                 "params": {"type": ev, "key": "Enter", "code": "Enter",
-                                            "windowsVirtualKeyCode": 13, "nativeVirtualKeyCode": 13}}))
-            ws.recv(); msg_id[0] += 1
+            ws.send(
+                json.dumps(
+                    {
+                        "id": msg_id[0],
+                        "method": "Input.dispatchKeyEvent",
+                        "params": {
+                            "type": ev,
+                            "key": "Enter",
+                            "code": "Enter",
+                            "windowsVirtualKeyCode": 13,
+                            "nativeVirtualKeyCode": 13,
+                        },
+                    }
+                )
+            )
+            ws.recv()
+            msg_id[0] += 1
 
         # Poll for new image
         img_src = None
@@ -497,13 +533,26 @@ def generate_image_clip_geminiproxy(prompt_text, clip_number, output_dir):
         time.sleep(0.4)
         rect = json.loads(rect_val)
 
-        pid = msg_id[0]; msg_id[0] += 1
-        ws.send(json.dumps({"id": pid, "method": "Page.captureScreenshot", "params": {
-            "format": "png",
-            "clip": {"x": max(0, rect["x"]), "y": max(0, rect["y"]),
-                     "width": rect["width"], "height": rect["height"],
-                     "scale": rect["scale"]}
-        }}))
+        pid = msg_id[0]
+        msg_id[0] += 1
+        ws.send(
+            json.dumps(
+                {
+                    "id": pid,
+                    "method": "Page.captureScreenshot",
+                    "params": {
+                        "format": "png",
+                        "clip": {
+                            "x": max(0, rect["x"]),
+                            "y": max(0, rect["y"]),
+                            "width": rect["width"],
+                            "height": rect["height"],
+                            "scale": rect["scale"],
+                        },
+                    },
+                }
+            )
+        )
         screenshot_data = None
         for _ in range(2000):
             msg = json.loads(ws.recv())
@@ -648,7 +697,11 @@ def main():
 
         print(f"[{i + 1}/{len(prompts)}] Processing prompt {clip_num}")
 
-        matched_refs = pick_ref_images(prompt_text, ref_images, fallback=ref_images[0]) if ref_images else []
+        matched_refs = (
+            pick_ref_images(prompt_text, ref_images, fallback=ref_images[0])
+            if ref_images
+            else []
+        )
         if matched_refs:
             print(f"  Using ref(s): {', '.join(matched_refs)}")
 
@@ -657,7 +710,9 @@ def main():
                 prompt_text, clip_num, matched_refs, clips_dir
             )
         elif IMAGE_MODEL == "geminiproxy":
-            clip_path = generate_image_clip_geminiproxy(prompt_text, clip_num, clips_dir)
+            clip_path = generate_image_clip_geminiproxy(
+                prompt_text, clip_num, clips_dir
+            )
         else:
             clip_path = generate_image_clip(prompt_text, clip_num, clips_dir)
         results.append((clip_num, clip_path is not None))
