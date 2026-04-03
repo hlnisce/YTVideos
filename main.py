@@ -125,8 +125,13 @@ HTML = r"""
         .cref-desc-editor { width: 100%; min-height: 130px; font-size: 11px; padding: 6px; border: 1px solid #ddd; border-radius: 4px; resize: vertical; box-sizing: border-box; font-family: inherit; color: #333; line-height: 1.4; }
         .cref-card-header { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
         .cref-card-header h4 { margin: 0; font-size: 14px; color: #333; flex: 1; }
+        .cref-name-input { flex: 1; font-size: 14px; font-weight: 600; color: #333; border: 1px solid transparent; background: transparent; padding: 2px 4px; border-radius: 4px; }
+        .cref-name-input:hover { border-color: #ddd; background: #fff; }
+        .cref-name-input:focus { border-color: #0366d6; background: #fff; outline: none; }
         .cref-save-icon { background: none; border: none; cursor: pointer; font-size: 14px; padding: 2px 4px; border-radius: 4px; }
         .cref-save-icon:hover { background: #e9ecef; }
+        .cref-delete-icon { background: none; border: none; cursor: pointer; font-size: 14px; padding: 2px 4px; border-radius: 4px; color: #dc3545; }
+        .cref-delete-icon:hover { background: #f8d7da; }
         .cref-words { margin-top: 8px; display: flex; flex-wrap: wrap; gap: 4px; }
         .cref-tag { background: #e7f1ff; color: #0366d6; font-size: 11px; padding: 2px 8px; border-radius: 10px; }
         .prompts-table { width: 100%; border-collapse: collapse; font-size: 12px; }
@@ -145,12 +150,13 @@ HTML = r"""
 <body>
     <div class="container">
         <div class="main-panel">
-            <h1>🎬 Video Generator <span style="font-size:13px; color:#888; font-weight:normal;">{{ version }}</span>
+             <h1>🎬 Video Generator <span style="font-size:13px; color:#888; font-weight:normal;">{{ version }}</span>
                 <button class="btn" id="runBtn" onclick="handleRunStop()" style="background: #28a745;">▶️ Run</button>
                 <button class="btn" onclick="resetProject()" style="background: #dc3545;">🗑️ Reset</button>
                 <select id="projectSelect" onchange="loadProject()" style="padding: 5px 8px; font-size: 13px;">
                     <option value="">-- Select Project --</option>
                 </select>
+                <button class="btn" onclick="resetPipelineFlag()" style="background: #6c757d; font-size:12px; padding: 5px 10px;" title="Reset pipeline running flag">🔄</button>
             </h1>
             <div class="tab-bar">
                 <div class="tab active" id="tab-config" onclick="switchTab('config')">⚙️ Config</div>
@@ -299,6 +305,29 @@ HTML = r"""
                         <label>Video:</label>
                         <input type="checkbox" id="generate_video" checked style="width:auto; flex:none;" onchange="toggleImageModel()">
                         <span style="font-size:12px; color:#888;">unchecked = image only</span>
+                    </div>
+                    <div class="form-group">
+                        <label>Pipeline Steps:</label>
+                        <div style="display:flex; flex-wrap:wrap; gap:12px; margin-top:4px;">
+                            <label style="font-size:13px; cursor:pointer; display:flex; align-items:center; gap:4px;">
+                                <input type="checkbox" id="step_narration" checked style="width:auto;" /> Narration
+                            </label>
+                            <label style="font-size:13px; cursor:pointer; display:flex; align-items:center; gap:4px;">
+                                <input type="checkbox" id="step_prep_cref" checked style="width:auto;" /> Prep CREF
+                            </label>
+                            <label style="font-size:13px; cursor:pointer; display:flex; align-items:center; gap:4px;">
+                                <input type="checkbox" id="step_prompts" checked style="width:auto;" /> Prompts
+                            </label>
+                            <label style="font-size:13px; cursor:pointer; display:flex; align-items:center; gap:4px;">
+                                <input type="checkbox" id="step_thumbnail" checked style="width:auto;" /> Thumbnail
+                            </label>
+                            <label style="font-size:13px; cursor:pointer; display:flex; align-items:center; gap:4px;">
+                                <input type="checkbox" id="step_clips" checked style="width:auto;" /> Clips
+                            </label>
+                            <label style="font-size:13px; cursor:pointer; display:flex; align-items:center; gap:4px;">
+                                <input type="checkbox" id="step_assemble" checked style="width:auto;" /> Assemble
+                            </label>
+                        </div>
                     </div>
                     <div class="form-group" id="imageModelGroup" style="opacity:0.4; pointer-events:none;">
                         <label>Image Model:</label>
@@ -842,6 +871,12 @@ HTML = r"""
                     document.getElementById('image_model').value = data.image_model || 'Juggernaut-XL_v9_RunDiffusionPhoto_v2.safetensors';
                     document.getElementById('transition_style').value = data.transition_style || 'None';
                     document.getElementById('transition_duration').value = data.transition_duration !== undefined ? data.transition_duration : 1.0;
+                    document.getElementById('step_narration').checked = data.step_narration !== false;
+                    document.getElementById('step_prep_cref').checked = data.step_prep_cref !== false;
+                    document.getElementById('step_prompts').checked = data.step_prompts !== false;
+                    document.getElementById('step_thumbnail').checked = data.step_thumbnail !== false;
+                    document.getElementById('step_clips').checked = data.step_clips !== false;
+                    document.getElementById('step_assemble').checked = data.step_assemble !== false;
                     toggleImageModel();
                 });
         }
@@ -862,7 +897,7 @@ HTML = r"""
                     const characters = crefData.characters || [];
                     container.innerHTML = `
                         <table class="prompts-table">
-                            <thead><tr><th>#</th><th>Raw Prompt</th><th>CREF</th><th>Final Prompt</th><th>Image</th></tr></thead>
+                            <thead><tr><th>#</th><th>Sentence</th><th>Raw Prompt</th><th>CREF</th><th>Final Prompt</th><th>Image</th></tr></thead>
                             <tbody>${promptData.prompts.map((p, i) => {
                                 const clipName = `clip_${String(i + 1).padStart(2, '0')}.png`;
                                 const hasClip = clips.includes(clipName);
@@ -886,6 +921,7 @@ HTML = r"""
                                 }).join('');
                                 return `<tr>
                                     <td class="prompt-num">${i + 1}</td>
+                                    <td class="prompt-sentence">${p.sentence || ''}</td>
                                     <td class="prompt-sentence">${p.raw || p.sentence}</td>
                                     <td style="white-space:nowrap; padding:8px;">${crefCheckboxes}</td>
                                     <td class="prompt-text">
@@ -904,7 +940,6 @@ HTML = r"""
             if (!textarea) return;
             let prompt = textarea.value;
             if (isChecked) {
-                // Insert CREF after style_desc (first sentence ending with period)
                 const firstPeriod = prompt.indexOf('. ');
                 if (firstPeriod !== -1) {
                     prompt = prompt.substring(0, firstPeriod + 2) + fullDesc + ', ' + prompt.substring(firstPeriod + 2);
@@ -912,9 +947,23 @@ HTML = r"""
                     prompt = fullDesc + ', ' + prompt;
                 }
             } else {
-                // Remove CREF description
-                const escaped = fullDesc.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-                prompt = prompt.replace(new RegExp(',?' + escaped + ',?', 'g'), ',').replace(/,+/g, ',').replace(/^,\s*/, '').replace(/,\s*$/, '');
+                // Extract just the description part (after "Name, ")
+                const descOnly = fullDesc.includes(',') ? fullDesc.substring(fullDesc.indexOf(',') + 1).trim() : fullDesc;
+                
+                // Try removing fullDesc first, then just description
+                const patterns = [fullDesc, descOnly];
+                for (const p of patterns) {
+                    if (!p) continue;
+                    // Escape regex special chars, but keep commas as literal
+                    const escaped = p.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                    // Match with optional surrounding commas and spaces
+                    const regex = new RegExp(',?\\s*' + escaped + '\\s*,?', 'g');
+                    prompt = prompt.replace(regex, ', ');
+                }
+                
+                // Clean up: remove double commas, leading/trailing commas, extra spaces
+                prompt = prompt.replace(/,\s*,/g, ',').replace(/^,\s*/, '').replace(/,\s*$/, '');
+                prompt = prompt.replace(/\.  /g, '. ');
             }
             textarea.value = prompt;
         }
@@ -1058,8 +1107,9 @@ HTML = r"""
                                     : `<div class="no-image" onclick="regenerateCrefImage(${i}, '${c.safe_name}', '${c.name}')" style="cursor:pointer;" title="Click to generate">No reference image yet</div>`}
                             </div>
                             <div class="cref-card-header">
-                                <h4>${c.name}</h4>
+                                <input class="cref-name-input" id="cref-name-${i}" value="${c.name}" data-original="${c.name}" />
                                 <button class="cref-save-icon" onclick="saveCrefDesc(${i})" title="Save">💾</button>
+                                <button class="cref-delete-icon" onclick="deleteCrefEntry(${i}, '${c.safe_name}', '${c.name}')" title="Delete">✕</button>
                             </div>
                             <textarea class="cref-desc-editor" id="cref-desc-${i}" data-name="${c.name}">${c.description}</textarea>
                             ${c.narration_words.length ? `<div class="cref-words">${c.narration_words.map(w => `<span class="cref-tag">${w}</span>`).join('')}</div>` : ''}
@@ -1072,18 +1122,46 @@ HTML = r"""
             const title = document.getElementById('projectSelect').value;
             if (!title) { log('No project selected', 'error'); return; }
             const textarea = document.getElementById('cref-desc-' + index);
-            const name = textarea.dataset.name;
+            const nameInput = document.getElementById('cref-name-' + index);
+            const name = nameInput.value.trim();
+            const originalName = nameInput.dataset.original;
             const description = textarea.value;
             fetch('/api/cref/save', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({title, name, description})
+                body: JSON.stringify({title, name, original_name: originalName, description})
             })
             .then(r => r.json())
             .then(data => {
-                if (data.status === 'ok') log(`Saved ${name}`, 'success');
+                if (data.status === 'ok') {
+                    nameInput.dataset.original = name;
+                    textarea.dataset.name = name;
+                    log(`Saved ${name}`, 'success');
+                }
                 else log('Save failed: ' + (data.error || ''), 'error');
             });
+        }
+
+        function deleteCrefEntry(index, safeName, charName) {
+            const title = document.getElementById('projectSelect').value;
+            if (!title) return log('Select a project first', 'error');
+            if (!confirm(`Delete "${charName}" from CREF?`)) return;
+            log(`Deleting ${charName}...`);
+            fetch('/api/cref/delete', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({title, name: charName, safe_name: safeName})
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (data.status === 'ok') {
+                    log(`✓ ${charName} deleted`, 'success');
+                    loadCref(title);
+                } else {
+                    log('✗ ' + (data.error || 'Failed to delete'), 'error');
+                }
+            })
+            .catch(err => log('✗ ' + err.message, 'error'));
         }
 
         function regenerateCrefImage(idx, safeName, charName) {
@@ -1145,7 +1223,13 @@ HTML = r"""
                 image_model: document.getElementById('image_model').value,
                 thumb_image_model: document.getElementById('thumb_image_model').value,
                 transition_style: document.getElementById('transition_style').value,
-                transition_duration: parseFloat(document.getElementById('transition_duration').value) || 1.0
+                transition_duration: parseFloat(document.getElementById('transition_duration').value) || 1.0,
+                step_narration: document.getElementById('step_narration').checked,
+                step_prep_cref: document.getElementById('step_prep_cref').checked,
+                step_prompts: document.getElementById('step_prompts').checked,
+                step_thumbnail: document.getElementById('step_thumbnail').checked,
+                step_clips: document.getElementById('step_clips').checked,
+                step_assemble: document.getElementById('step_assemble').checked,
             };
             
             log(`Saving config for: ${config.title}`);
@@ -1216,6 +1300,24 @@ HTML = r"""
                     switchTab(activeTab);
                 } else {
                     log(`✗ Reset failed: ${data.error}`, 'error');
+                }
+            });
+        }
+
+        function resetPipelineFlag() {
+            const title = document.getElementById('projectSelect').value;
+            if (!title) { log('⚠ No project selected', 'error'); return; }
+            fetch('/api/reset-pipeline', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({title})
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (data.status === 'ok') {
+                    log(`🔄 Pipeline flag reset for "${title}"`, 'success');
+                } else {
+                    log(`✗ Failed: ${data.error}`, 'error');
                 }
             });
         }
@@ -1404,6 +1506,7 @@ def list_projects():
 
 
 PREPARE_SCRIPT = os.path.join(os.path.dirname(__file__), "scripts", "prepare.py")
+PROMPTS_SCRIPT = os.path.join(os.path.dirname(__file__), "scripts", "prompts.py")
 GENERATEVIDEO_SCRIPT = os.path.join(
     os.path.dirname(__file__), "scripts", "generatevideo.py"
 )
@@ -1472,6 +1575,10 @@ def run_script(cmd, timeout=600):
 
 def run_prepare(narration_path):
     return run_script(["python", PREPARE_SCRIPT, narration_path], timeout=600)
+
+
+def run_prompts(narration_path):
+    return run_script(["python", PROMPTS_SCRIPT, narration_path], timeout=1800)
 
 
 def run_generate_video(project_dir):
@@ -1997,7 +2104,7 @@ def _generate_thumbnail_and_metadata(
     else:
         p.push("Generating story description and YouTube tags...")
         desc_prompt = (
-            f"Provide a YouTube video description in exactly three sentences for a children's story titled '{title}'. "
+            f"Provide a YouTube video description in exactly three sentences for a story titled '{title}'. "
             f"After the sentences, on a new line, provide exactly 5 relevant keywords/hashtags separated by commas, "
             f"but do NOT include the '#' symbol. Output ONLY the description text and the hashtag line."
         )
@@ -2035,7 +2142,7 @@ def _generate_thumbnail_and_metadata(
         f" The image must be in {image_style} style: {style_desc}" if style_desc else ""
     )
     thumb_prompt_text = (
-        f"Create a short, vivid image generation prompt for a YouTube thumbnail for a children's story titled '{title}'. "
+        f"Create a short, vivid image generation prompt for a YouTube thumbnail for a story titled '{title}'. "
         f"Describe only the visual scene — characters, colors, lighting, composition, and mood. "
         f"Make it high-contrast and visually striking. Do not include any text or words in the image.{style_clause} "
         f"Output ONLY the image prompt."
@@ -2349,16 +2456,11 @@ def _generate_audio_and_assemble(project_dir, narration_path, voice_model, voice
         p.push(f"✗ Assembly failed: {e}", "error")
 
 
-def _generate_narration_with_claude(
-    title, story_type, narration_path, sentence_count=30
-):
-    """Generate narration.txt and RawPrompt.txt using the key-service (Claude CLI). Returns prompt or raises."""
-    _ensure_key_service()
-    project_dir = os.path.dirname(narration_path)
-    rawprompt_path = os.path.join(project_dir, "RawPrompt.txt")
+def _build_narration_prompt(title, story_type, sentence_count=30):
+    """Build the narration+prompts prompt text. Shared by all AI helpers."""
     story_type_display = story_type.replace("_", " ").title()
-    prompt = (
-        f"Write a {sentence_count}-sentence {story_type_display} narration script for a children's "
+    return (
+        f"Write a {sentence_count}-sentence {story_type_display} narration script for a "
         f"YouTube video titled '{title}'. Output only the story text — one sentence per "
         f"line, no numbering, no headers, no extra commentary. "
         f"IMPORTANT: The very last sentence of the narration must always be a SINGLE CTA asking viewers "
@@ -2366,23 +2468,15 @@ def _generate_narration_with_claude(
         f"Then after the narration, write a section called [Prompts] and for EACH sentence above, "
         f"write a detailed image generation prompt. Each prompt should describe the scene vividly: "
         f"setting, background, lighting, camera angle (close-up, wide shot, etc.), character positions, "
-        f"mood, and colors. For the final CTA sentence, make the image prompt something appropriate "
-        f"like a 'The End' screen or a 'Thank You' card. "
+        f"mood, and colors. "
         f"One prompt per line, no numbering.\n\n"
         f"Format your entire output as:\n"
         f"<narration sentences>\n\n[Prompts]\n<prompt sentences>"
     )
-    resp = requests.post(
-        f"{KEY_SERVICE_URL}/tmux/chat",
-        json={"text": f"claude: {prompt}", "timeout": 180},
-        timeout=190,
-    )
-    resp.raise_for_status()
-    full_content = resp.json().get("reply", "").strip()
-    if not full_content:
-        raise RuntimeError("key-service returned empty reply")
 
-    # Split narration from prompts
+
+def _parse_narration_response(full_content, narration_path, rawprompt_path):
+    """Split AI response into narration and prompts, write files."""
     if "[Prompts]" in full_content:
         parts = full_content.split("[Prompts]", 1)
         narration_content = parts[0].strip()
@@ -2396,30 +2490,195 @@ def _generate_narration_with_claude(
     if prompts_content:
         with open(rawprompt_path, "w") as f:
             f.write(prompts_content + "\n")
-    return prompt
 
 
-def _generate_narration_with_opencode(
-    title, story_type, narration_path, project_dir, sentence_count=30
+def _generate_narration(
+    title, story_type, narration_path, ai_helper, project_dir=None, sentence_count=30
 ):
-    """Generate narration.txt and RawPrompt.txt using OpenCode. Returns prompt string or raises."""
+    """Generate narration.txt and RawPrompt.txt using the configured AI helper. Returns prompt or raises."""
+    prompt = _build_narration_prompt(title, story_type, sentence_count)
+    project_dir = project_dir or os.path.dirname(narration_path)
     rawprompt_path = os.path.join(project_dir, "RawPrompt.txt")
-    story_type_display = story_type.replace("_", " ").title()
-    prompt = (
-        f"Write a {sentence_count}-sentence {story_type_display} narration script for a children's "
-        f"YouTube video titled '{title}'. Output only the story text — one sentence per "
-        f"line, no numbering, no headers, no extra commentary. "
-        f"IMPORTANT: The very last sentence of the narration must always be a SINGLE CTA asking viewers "
-        f"to like, share and subscribe. Limit this to exactly one sentence.\n\n"
-        f"Then after the narration, write a section called [Prompts] and for EACH sentence above, "
-        f"write a detailed image generation prompt. Each prompt should describe the scene vividly: "
-        f"setting, background, lighting, camera angle (close-up, wide shot, etc.), character positions, "
-        f"mood, and colors. For the final CTA sentence, make the image prompt something appropriate "
-        f"like a 'The End' screen or a 'Thank You' card. "
-        f"One prompt per line, no numbering.\n\n"
-        f"Format your entire output as:\n"
-        f"<narration sentences>\n\n[Prompts]\n<prompt sentences>"
-    )
+
+    if ai_helper == "claude":
+        _ensure_key_service()
+        resp = requests.post(
+            f"{KEY_SERVICE_URL}/tmux/chat",
+            json={"text": f"claude: {prompt}", "timeout": 180},
+            timeout=190,
+        )
+        resp.raise_for_status()
+        full_content = resp.json().get("reply", "").strip()
+        if not full_content:
+            raise RuntimeError("key-service returned empty reply")
+        _parse_narration_response(full_content, narration_path, rawprompt_path)
+        return prompt
+
+    if ai_helper == "geminiproxy":
+        import websocket as _ws
+
+        cdp_port = 9222
+        tab_url = "gemini.google.com"
+        selector = "structured-content-container"
+
+        resp = requests.get(f"http://localhost:{cdp_port}/json", timeout=3)
+        tabs = [
+            t
+            for t in resp.json()
+            if t.get("type") == "page" and tab_url in t.get("url", "")
+        ]
+        if not tabs:
+            raise RuntimeError(f"GeminiProxy: no Chrome tab found for {tab_url}")
+        tab = tabs[0]
+        ws_url = tab["webSocketDebuggerUrl"]
+        requests.get(
+            f"http://localhost:{cdp_port}/json/activate/{tab['id']}", timeout=3
+        )
+        time.sleep(0.5)
+
+        deadline = time.monotonic() + 180
+        poll_id = [1]
+        ws = _ws.create_connection(ws_url, timeout=10, suppress_origin=True)
+
+        def cdp_eval(js):
+            if time.monotonic() > deadline:
+                return None
+            pid = poll_id[0]
+            poll_id[0] += 1
+            ws.send(
+                json.dumps(
+                    {
+                        "id": pid,
+                        "method": "Runtime.evaluate",
+                        "params": {"expression": js},
+                    }
+                )
+            )
+            for _ in range(200):
+                if time.monotonic() > deadline:
+                    return None
+                msg = json.loads(ws.recv())
+                if msg.get("id") == pid:
+                    return msg.get("result", {}).get("result", {}).get("value")
+            return None
+
+        cdp_eval("""(function() {
+            var el = document.querySelector('[contenteditable="true"]');
+            if (el) { el.focus(); el.click(); }
+        })()""")
+        time.sleep(0.3)
+        pre_last = cdp_eval(f"""(function() {{
+            var els = document.querySelectorAll({json.dumps(selector)});
+            return els.length ? els[els.length - 1].innerText : null;
+        }})()""")
+        mid = poll_id[0]
+        poll_id[0] += 1
+        ws.send(
+            json.dumps(
+                {"id": mid, "method": "Input.insertText", "params": {"text": prompt}}
+            )
+        )
+        ws.recv()
+        time.sleep(0.2)
+        for ev in ("keyDown", "keyUp"):
+            mid = poll_id[0]
+            poll_id[0] += 1
+            ws.send(
+                json.dumps(
+                    {
+                        "id": mid,
+                        "method": "Input.dispatchKeyEvent",
+                        "params": {
+                            "type": ev,
+                            "key": "Enter",
+                            "code": "Enter",
+                            "windowsVirtualKeyCode": 13,
+                            "nativeVirtualKeyCode": 13,
+                        },
+                    }
+                )
+            )
+            ws.recv()
+
+        reply = None
+        prev_reply = None
+        time.sleep(3)
+        while time.monotonic() < deadline:
+            val = cdp_eval(f"""(function() {{
+                var els = document.querySelectorAll({json.dumps(selector)});
+                if (!els.length) return null;
+                return els[els.length - 1].innerText || null;
+            }})()""")
+            if val and val == pre_last:
+                val = None
+            if val and val == prev_reply:
+                reply = val
+                break
+            prev_reply = val
+            time.sleep(2)
+        ws.close()
+        if not reply:
+            raise RuntimeError("GeminiProxy: timed out waiting for response")
+        full_content = reply.strip()
+        if not full_content:
+            raise RuntimeError("GeminiProxy returned empty reply")
+        _parse_narration_response(full_content, narration_path, rawprompt_path)
+        return prompt
+
+    if ai_helper == "google":
+        from google import genai
+        from google.genai import types
+
+        api_key = os.environ.get("GOOGLE_API_KEY")
+        if not api_key:
+            try:
+                import importlib.util
+
+                _spec = importlib.util.spec_from_file_location(
+                    "api_keys",
+                    "/home/henry/APPS/ContentCreator/Imager/core/api_keys.py",
+                )
+                _mod = importlib.util.module_from_spec(_spec)
+                _spec.loader.exec_module(_mod)
+                api_key = _mod.GOOGLE_API_KEY
+            except Exception:
+                raise RuntimeError(
+                    "GOOGLE_API_KEY environment variable not set and ContentCreator api_keys.py not found"
+                )
+
+        client = genai.Client(api_key=api_key)
+        response = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                temperature=0.7,
+                safety_settings=[
+                    types.SafetySetting(
+                        category=types.HarmCategory.HARM_CATEGORY_HARASSMENT,
+                        threshold=types.HarmBlockThreshold.BLOCK_NONE,
+                    ),
+                    types.SafetySetting(
+                        category=types.HarmCategory.HARM_CATEGORY_HATE_SPEECH,
+                        threshold=types.HarmBlockThreshold.BLOCK_NONE,
+                    ),
+                    types.SafetySetting(
+                        category=types.HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT,
+                        threshold=types.HarmBlockThreshold.BLOCK_NONE,
+                    ),
+                    types.SafetySetting(
+                        category=types.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
+                        threshold=types.HarmBlockThreshold.BLOCK_NONE,
+                    ),
+                ],
+            ),
+        )
+        full_content = response.text.strip()
+        if not full_content:
+            raise RuntimeError("Google returned empty reply")
+        _parse_narration_response(full_content, narration_path, rawprompt_path)
+        return prompt
+
+    # Default: opencode
     pre_mtime = (
         os.path.getmtime(narration_path) if os.path.exists(narration_path) else None
     )
@@ -2442,331 +2701,104 @@ def _generate_narration_with_opencode(
     if not full_content:
         stderr = ansi_escape.sub("", result.stderr).strip()
         raise RuntimeError(stderr or "opencode returned empty output")
-
-    # Split narration from prompts
-    if "[Prompts]" in full_content:
-        parts = full_content.split("[Prompts]", 1)
-        narration_content = parts[0].strip()
-        prompts_content = parts[1].strip()
-    else:
-        narration_content = full_content
-        prompts_content = ""
-
-    with open(narration_path, "w") as f:
-        f.write(narration_content + "\n")
-    if prompts_content:
-        with open(rawprompt_path, "w") as f:
-            f.write(prompts_content + "\n")
-    return prompt
-
-
-def _generate_narration_with_geminiproxy(
-    title, story_type, narration_path, sentence_count=30
-):
-    """Generate narration.txt and RawPrompt.txt via GeminiProxy (CDP browser). Returns prompt or raises."""
-    import websocket as _websocket
-
-    project_dir = os.path.dirname(narration_path)
-    rawprompt_path = os.path.join(project_dir, "RawPrompt.txt")
-    story_type_display = story_type.replace("_", " ").title()
-    prompt = (
-        f"Write a {sentence_count}-sentence {story_type_display} narration script for a children's "
-        f"YouTube video titled '{title}'. Output only the story text — one sentence per "
-        f"line, no numbering, no headers, no extra commentary. "
-        f"IMPORTANT: The very last sentence of the narration must always be a SINGLE CTA asking viewers "
-        f"to like, share and subscribe. Limit this to exactly one sentence.\n\n"
-        f"Then after the narration, write a section called [Prompts] and for EACH sentence above, "
-        f"write a detailed image generation prompt. Each prompt should describe the scene vividly: "
-        f"setting, background, lighting, camera angle (close-up, wide shot, etc.), character positions, "
-        f"mood, and colors. For the final CTA sentence, make the image prompt something appropriate "
-        f"like a 'The End' screen or a 'Thank You' card. "
-        f"One prompt per line, no numbering.\n\n"
-        f"Format your entire output as:\n"
-        f"<narration sentences>\n\n[Prompts]\n<prompt sentences>"
-    )
-
-    cdp_port = 9222
-    tab_url = "gemini.google.com"
-    selector = "structured-content-container"
-
-    resp = requests.get(f"http://localhost:{cdp_port}/json", timeout=3)
-    all_tabs = resp.json()
-    tabs = [
-        t for t in all_tabs if t.get("type") == "page" and tab_url in t.get("url", "")
-    ]
-    if not tabs:
-        raise RuntimeError(
-            f"GeminiProxy: no Chrome tab found for {tab_url} — open it and log in first"
-        )
-
-    tab = tabs[0]
-    ws_url = tab["webSocketDebuggerUrl"]
-    requests.get(f"http://localhost:{cdp_port}/json/activate/{tab['id']}", timeout=3)
-    time.sleep(0.5)
-
-    deadline = time.monotonic() + 180
-    poll_id = [1]
-
-    ws = _websocket.create_connection(ws_url, timeout=10, suppress_origin=True)
-
-    def cdp_eval(expression):
-        if time.monotonic() > deadline:
-            return None
-        pid = poll_id[0]
-        poll_id[0] += 1
-        ws.send(
-            json.dumps(
-                {
-                    "id": pid,
-                    "method": "Runtime.evaluate",
-                    "params": {"expression": expression},
-                }
-            )
-        )
-        for _ in range(200):
-            if time.monotonic() > deadline:
-                return None
-            msg = json.loads(ws.recv())
-            if msg.get("id") == pid:
-                return msg.get("result", {}).get("result", {}).get("value")
-        return None
-
-    # Focus input
-    cdp_eval("""(function() {
-        var el = document.querySelector('[contenteditable="true"]');
-        if (el) { el.focus(); el.click(); }
-    })()""")
-    time.sleep(0.3)
-
-    # Snapshot last response before send
-    pre_last = cdp_eval(f"""(function() {{
-        var els = document.querySelectorAll({json.dumps(selector)});
-        return els.length ? els[els.length - 1].innerText : null;
-    }})()""")
-
-    # Insert prompt text
-    mid = poll_id[0]
-    poll_id[0] += 1
-    ws.send(
-        json.dumps(
-            {"id": mid, "method": "Input.insertText", "params": {"text": prompt}}
-        )
-    )
-    ws.recv()
-    time.sleep(0.2)
-
-    # Submit via Enter
-    for ev in ("keyDown", "keyUp"):
-        mid = poll_id[0]
-        poll_id[0] += 1
-        ws.send(
-            json.dumps(
-                {
-                    "id": mid,
-                    "method": "Input.dispatchKeyEvent",
-                    "params": {
-                        "type": ev,
-                        "key": "Enter",
-                        "code": "Enter",
-                        "windowsVirtualKeyCode": 13,
-                        "nativeVirtualKeyCode": 13,
-                    },
-                }
-            )
-        )
-        ws.recv()
-
-    # Poll for stable response
-    reply = None
-    prev_reply = None
-    time.sleep(3)
-    while time.monotonic() < deadline:
-        js = f"""(function() {{
-            var els = document.querySelectorAll({json.dumps(selector)});
-            if (!els.length) return null;
-            var txt = els[els.length - 1].innerText || null;
-            return txt;
-        }})()"""
-        value = cdp_eval(js)
-        if value and value == pre_last:
-            value = None
-        if value and value == prev_reply:
-            reply = value
-            break
-        prev_reply = value
-        time.sleep(2)
-
-    ws.close()
-
-    if not reply:
-        raise RuntimeError("GeminiProxy: timed out waiting for response")
-
-    full_content = reply.strip()
-    if "[Prompts]" in full_content:
-        parts = full_content.split("[Prompts]", 1)
-        narration_content = parts[0].strip()
-        prompts_content = parts[1].strip()
-    else:
-        narration_content = full_content
-        prompts_content = ""
-
-    with open(narration_path, "w") as f:
-        f.write(narration_content + "\n")
-    if prompts_content:
-        with open(rawprompt_path, "w") as f:
-            f.write(prompts_content + "\n")
-    return prompt
-
-
-def _generate_narration_with_google(
-    title, story_type, narration_path, sentence_count=30
-):
-    """Generate narration.txt and RawPrompt.txt using Google GenAI SDK. Returns prompt or raises."""
-    from google import genai
-    from google.genai import types
-
-    api_key = os.environ.get("GOOGLE_API_KEY")
-    if not api_key:
-        try:
-            import importlib.util
-
-            _spec = importlib.util.spec_from_file_location(
-                "api_keys", "/home/henry/APPS/ContentCreator/Imager/core/api_keys.py"
-            )
-            _mod = importlib.util.module_from_spec(_spec)
-            _spec.loader.exec_module(_mod)
-            api_key = _mod.GOOGLE_API_KEY
-        except Exception:
-            raise RuntimeError(
-                "GOOGLE_API_KEY environment variable not set and ContentCreator api_keys.py not found"
-            )
-
-    project_dir = os.path.dirname(narration_path)
-    rawprompt_path = os.path.join(project_dir, "RawPrompt.txt")
-    story_type_display = story_type.replace("_", " ").title()
-    prompt = (
-        f"Write a {sentence_count}-sentence {story_type_display} narration script for a children's "
-        f"YouTube video titled '{title}'. Output only the story text — one sentence per "
-        f"line, no numbering, no headers, no extra commentary. "
-        f"IMPORTANT: The very last sentence of the narration must always be a SINGLE CTA asking viewers "
-        f"to like, share and subscribe. Limit this to exactly one sentence.\n\n"
-        f"Then after the narration, write a section called [Prompts] and for EACH sentence above, "
-        f"write a detailed image generation prompt. Each prompt should describe the scene vividly: "
-        f"setting, background, lighting, camera angle (close-up, wide shot, etc.), character positions, "
-        f"mood, and colors. For the final CTA sentence, make the image prompt something appropriate "
-        f"like a 'The End' screen or a 'Thank You' card. "
-        f"One prompt per line, no numbering.\n\n"
-        f"Format your entire output as:\n"
-        f"<narration sentences>\n\n[Prompts]\n<prompt sentences>"
-    )
-
-    client = genai.Client(api_key=api_key)
-    response = client.models.generate_content(
-        model="gemini-2.5-flash",
-        contents=prompt,
-        config=types.GenerateContentConfig(
-            temperature=0.7,
-            safety_settings=[
-                types.SafetySetting(
-                    category=types.HarmCategory.HARM_CATEGORY_HARASSMENT,
-                    threshold=types.HarmBlockThreshold.BLOCK_NONE,
-                ),
-                types.SafetySetting(
-                    category=types.HarmCategory.HARM_CATEGORY_HATE_SPEECH,
-                    threshold=types.HarmBlockThreshold.BLOCK_NONE,
-                ),
-                types.SafetySetting(
-                    category=types.HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT,
-                    threshold=types.HarmBlockThreshold.BLOCK_NONE,
-                ),
-                types.SafetySetting(
-                    category=types.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
-                    threshold=types.HarmBlockThreshold.BLOCK_NONE,
-                ),
-            ],
-        ),
-    )
-    full_content = response.text.strip()
-    if not full_content:
-        raise RuntimeError("Google returned empty reply")
-
-    if "[Prompts]" in full_content:
-        parts = full_content.split("[Prompts]", 1)
-        narration_content = parts[0].strip()
-        prompts_content = parts[1].strip()
-    else:
-        narration_content = full_content
-        prompts_content = ""
-
-    with open(narration_path, "w") as f:
-        f.write(narration_content + "\n")
-    if prompts_content:
-        with open(rawprompt_path, "w") as f:
-            f.write(prompts_content + "\n")
+    _parse_narration_response(full_content, narration_path, rawprompt_path)
     return prompt
 
 
 def _run_pipeline(
-    title, project_dir, narration_path, story_type, ai_helper, sentence_count=30
+    title,
+    project_dir,
+    narration_path,
+    story_type,
+    ai_helper,
+    sentence_count=30,
+    step_narration=True,
+    step_prep_cref=True,
+    step_prompts=True,
+    step_thumbnail=True,
+    step_clips=True,
+    step_assemble=True,
 ):
-    """Background thread: generate narration → prepare → video."""
+    """Background thread: generate narration → prepare → prompts → video."""
     p = _pipeline
     try:
-        if os.path.exists(narration_path):
-            p.push("⚠ narration.txt already exists — skipping AI generation", "info")
-        else:
-            p.push(
-                f"Generating narration via {ai_helper} ({sentence_count} sentences)..."
-            )
-            if ai_helper == "claude":
-                prompt = _generate_narration_with_claude(
-                    title, story_type, narration_path, sentence_count
-                )
-            elif ai_helper == "geminiproxy":
-                prompt = _generate_narration_with_geminiproxy(
-                    title, story_type, narration_path, sentence_count
-                )
-            elif ai_helper == "google":
-                prompt = _generate_narration_with_google(
-                    title, story_type, narration_path, sentence_count
-                )
-            else:
-                prompt = _generate_narration_with_opencode(
-                    title, story_type, narration_path, project_dir, sentence_count
-                )
-            p.push(f"Prompt → {prompt}")
-            p.push(f"✓ Narration created: {narration_path}", "success")
-
-        p.push("Running prepare script...")
-        run_prepare(narration_path)
-
-        with open(narration_path, "r") as f:
-            narration_text = f.read()
         proj_cfg = {}
         proj_cfg_path = os.path.join(project_dir, "project.json")
         if os.path.exists(proj_cfg_path):
             with open(proj_cfg_path) as f:
                 proj_cfg = json.load(f)
-        thumb_image_model = proj_cfg.get("thumb_image_model") or proj_cfg.get(
-            "image_model", "geminiproxy"
-        )
-        _generate_thumbnail_and_metadata(
-            title,
-            project_dir,
-            narration_text,
-            ai_helper,
-            thumb_image_model,
-            proj_cfg.get("image_style", ""),
-        )
 
-        p.push("Running video generation...")
-        run_generate_video(project_dir)
+        # Step 1: Narration
+        if step_narration:
+            if os.path.exists(narration_path):
+                p.push(
+                    "⚠ narration.txt already exists — skipping AI generation", "info"
+                )
+            else:
+                p.push(
+                    f"Generating narration via {ai_helper} ({sentence_count} sentences)..."
+                )
+                prompt = _generate_narration(
+                    title,
+                    story_type,
+                    narration_path,
+                    ai_helper,
+                    project_dir,
+                    sentence_count,
+                )
+                p.push(f"Prompt → {prompt}")
+                p.push(f"✓ Narration created: {narration_path}", "success")
+        else:
+            p.push("⊘ Skipping Narration", "info")
 
-        voice_model = proj_cfg.get("voice_model", "en-US-AnaNeural")
-        voice_rate = proj_cfg.get("voice_rate", "+0%")
-        _generate_audio_and_assemble(
-            project_dir, narration_path, voice_model, voice_rate
-        )
+        # Step 2: Prep CREF
+        if step_prep_cref:
+            p.push("Running prepare script...")
+            run_prepare(narration_path)
+        else:
+            p.push("⊘ Skipping Prep CREF", "info")
+
+        # Step 3: Prompts + CREF images
+        if step_prompts:
+            p.push("Running prompts script...")
+            run_prompts(narration_path)
+        else:
+            p.push("⊘ Skipping Prompts", "info")
+
+        # Step 4: Thumbnail
+        if step_thumbnail:
+            with open(narration_path, "r") as f:
+                narration_text = f.read()
+            thumb_image_model = proj_cfg.get("thumb_image_model") or proj_cfg.get(
+                "image_model", "geminiproxy"
+            )
+            _generate_thumbnail_and_metadata(
+                title,
+                project_dir,
+                narration_text,
+                ai_helper,
+                thumb_image_model,
+                proj_cfg.get("image_style", ""),
+            )
+        else:
+            p.push("⊘ Skipping Thumbnail", "info")
+
+        # Step 5: Clips
+        if step_clips:
+            p.push("Running video generation...")
+            run_generate_video(project_dir)
+        else:
+            p.push("⊘ Skipping Clips", "info")
+
+        # Step 6: Assemble
+        if step_assemble:
+            voice_model = proj_cfg.get("voice_model", "en-US-AnaNeural")
+            voice_rate = proj_cfg.get("voice_rate", "+0%")
+            _generate_audio_and_assemble(
+                project_dir, narration_path, voice_model, voice_rate
+            )
+        else:
+            p.push("⊘ Skipping Assemble", "info")
 
         p.push("✓ Pipeline complete", "success")
     except Exception as e:
@@ -2802,6 +2834,12 @@ def generate_narration():
     clip_count = config.get("clip_count", 0)
     sentence_count = clip_count if clip_count and clip_count > 0 else 30
     narration_path = os.path.join(project_dir, "narration.txt")
+    step_narration = config.get("step_narration", True)
+    step_prep_cref = config.get("step_prep_cref", True)
+    step_prompts = config.get("step_prompts", True)
+    step_thumbnail = config.get("step_thumbnail", True)
+    step_clips = config.get("step_clips", True)
+    step_assemble = config.get("step_assemble", True)
 
     _pipeline.running = True
     _pipeline.logs.clear()
@@ -2815,6 +2853,12 @@ def generate_narration():
             story_type,
             ai_helper,
             sentence_count,
+            step_narration,
+            step_prep_cref,
+            step_prompts,
+            step_thumbnail,
+            step_clips,
+            step_assemble,
         ),
         daemon=True,
     )
@@ -2863,6 +2907,16 @@ def reset_project():
             shutil.rmtree(item_path)
             removed += 1
     return jsonify({"status": "ok", "removed": removed})
+
+
+@app.route("/api/reset-pipeline", methods=["POST"])
+def reset_pipeline_flag():
+    title = safe_title(request.json.get("title", ""))
+    if not title:
+        return jsonify({"status": "error", "error": "No title provided"})
+    _pipeline.running = False
+    _pipeline.logs.clear()
+    return jsonify({"status": "ok"})
 
 
 @app.route("/api/prompts", methods=["GET"])
@@ -2975,6 +3029,7 @@ def save_cref():
     data = request.json
     title = safe_title(data.get("title", ""))
     char_name = data.get("name", "")
+    original_name = data.get("original_name", "")
     new_desc = data.get("description", "")
     if not title or not char_name:
         return jsonify({"status": "error", "error": "Missing title or name"})
@@ -2983,7 +3038,21 @@ def save_cref():
     if not os.path.exists(cref_path):
         return jsonify({"status": "error", "error": "CREF.txt not found"})
 
-    # Read all lines, update the matching one
+    renamed = False
+    if original_name and original_name != char_name:
+        old_safe = re.sub(r"[^a-zA-Z0-9]", "_", original_name).lower()
+        new_safe = re.sub(r"[^a-zA-Z0-9]", "_", char_name).lower()
+        old_img = os.path.join(VIDEOS_DIR, title, f"ref_{old_safe}.png")
+        new_img = os.path.join(VIDEOS_DIR, title, f"ref_{new_safe}.png")
+        if os.path.exists(old_img):
+            os.rename(old_img, new_img)
+            comfy_input = "/home/henry/comfy/ComfyUI/input"
+            old_ci = os.path.join(comfy_input, f"ref_{old_safe}.png")
+            new_ci = os.path.join(comfy_input, f"ref_{new_safe}.png")
+            if os.path.exists(old_ci):
+                os.rename(old_ci, new_ci)
+        renamed = True
+
     lines = []
     with open(cref_path) as f:
         for line in f:
@@ -2996,7 +3065,7 @@ def save_cref():
             words_part = pipe_parts[1] if len(pipe_parts) > 1 else ""
             comma_parts = desc_part.split(",", 1)
             name = comma_parts[0].strip()
-            if name == char_name:
+            if name == original_name or (not original_name and name == char_name):
                 updated = f"{char_name}, {new_desc}"
                 if words_part:
                     updated += f"|{words_part}"
@@ -3006,6 +3075,50 @@ def save_cref():
 
     with open(cref_path, "w") as f:
         f.writelines(lines)
+
+    return jsonify({"status": "ok", "renamed": renamed})
+
+
+@app.route("/api/cref/delete", methods=["POST"])
+def delete_cref():
+    import shutil
+
+    data = request.json
+    title = safe_title(data.get("title", ""))
+    char_name = data.get("name", "")
+    safe_name = data.get("safe_name", "")
+    if not title or not char_name:
+        return jsonify({"status": "error", "error": "Missing title or name"})
+
+    cref_path = os.path.join(VIDEOS_DIR, title, "CREF.txt")
+    if not os.path.exists(cref_path):
+        return jsonify({"status": "error", "error": "CREF.txt not found"})
+
+    lines = []
+    with open(cref_path) as f:
+        for line in f:
+            stripped = line.strip()
+            if not stripped or "=" in stripped or "CHARACTER" in stripped.upper():
+                lines.append(line)
+                continue
+            pipe_parts = stripped.split("|")
+            desc_part = pipe_parts[0].rstrip(".")
+            comma_parts = desc_part.split(",", 1)
+            name = comma_parts[0].strip()
+            if name == char_name:
+                continue
+            lines.append(line)
+
+    with open(cref_path, "w") as f:
+        f.writelines(lines)
+
+    ref_img = os.path.join(VIDEOS_DIR, title, f"ref_{safe_name}.png")
+    if os.path.exists(ref_img):
+        os.remove(ref_img)
+    comfy_input = "/home/henry/comfy/ComfyUI/input"
+    ci_img = os.path.join(comfy_input, f"ref_{safe_name}.png")
+    if os.path.exists(ci_img):
+        os.remove(ci_img)
 
     return jsonify({"status": "ok"})
 

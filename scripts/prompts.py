@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
 """
-prepare.py - Automated story preparation script
+prompts.py - Generate prompts.txt and CREF reference images
 Takes narration.txt as input and generates:
-1. CREF.txt (character reference descriptions)
-2. prompts.txt (numbered video generation prompts)
-3. Character reference images (using ComfyUI)
+1. prompts.txt (numbered video generation prompts)
+2. CREF reference images (one per character)
 
-Usage: python prepare.py <narration_file>
+Usage: python prompts.py <narration_file>
 """
 
 import os
@@ -17,7 +16,6 @@ import requests
 import time
 import shutil
 import json
-import base64
 
 COMFYUI_URL = "http://127.0.0.1:8188"
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -27,7 +25,7 @@ STYLE_DESCRIPTIONS = {
     "3D Render": "Clean, modern 3D CGI render. Smooth surfaces, precise geometry, studio-quality lighting with soft shadows. Polished and professional digital art look.",
     "Anime": "Japanese animation style. Large expressive eyes, clean linework, vibrant colors, dramatic lighting.",
     "Cartoon": "Expressive, vibrant character designs suitable for animation. Clear silhouettes, appealing features. Modern 2D style. Bright, saturated colors.",
-    "Cartoon Reality": "Stylized, expressive proportions (3D animated film look) with photorealistic skins/textures. ",
+    "Cartoon Reality": "Stylized, expressive proportions (3D animated film look) with photorealistic skins/textures. Cinematic lighting.",
     "Chinese": "Simple Chinese stick figure illustration. Circular head (light yellow skin, two short angled eyebrows, NO eyes, small U-shaped smile). Red square body. Thin black lines for arms and legs. No shading, no textures, no detail. Always populate the scene with multiple Chinese stick figure characters doing relevant actions. Background MUST feature distinctly Chinese cultural elements: curved-roof pagodas, red paper lanterns, bamboo stalks, cherry blossom trees, Great Wall silhouette. Use warm red and gold color palette. Keep everything minimal and flat.",
     "Cinematic": "Dramatic film-grade photography. Moody, high-contrast lighting with deep shadows and rich color grading. Widescreen cinematic composition, shallow depth of field.",
     "Comic Book": "Bold black ink outlines, halftone dot shading, high-contrast colors. Classic American comic book panel style. Dynamic action poses and strong visual drama.",
@@ -50,20 +48,7 @@ STYLE_DESCRIPTIONS = {
     "Watercolor": "Soft watercolor illustration style. Gentle washes of color, visible brushstrokes, dreamy atmosphere.",
 }
 
-
-def load_project_config():
-    """Load project configuration from project.json."""
-    config_path = os.path.join(PARENT_DIR, "project.json")
-    if os.path.exists(config_path):
-        with open(config_path, "r") as f:
-            return json.load(f)
-    return {}
-
-
-PROJECT_CONFIG = load_project_config()
-IMAGE_MODEL = PROJECT_CONFIG.get(
-    "image_model", "Juggernaut-XL_v9_RunDiffusionPhoto_v2.safetensors"
-)
+IMAGE_MODEL = "geminiproxy"
 KEY_SERVICE_URL = "http://localhost:7755"
 
 
@@ -80,11 +65,11 @@ def _call_ai(prompt, ai_helper, timeout=120):
 
     if ai_helper == "geminiproxy":
         import websocket as _ws
-        import json as _json
 
         cdp_port = 9222
         tab_url = "gemini.google.com"
         selector = "structured-content-container"
+
         resp = requests.get(f"http://localhost:{cdp_port}/json", timeout=3)
         tabs = [
             t
@@ -99,6 +84,7 @@ def _call_ai(prompt, ai_helper, timeout=120):
             f"http://localhost:{cdp_port}/json/activate/{tab['id']}", timeout=3
         )
         time.sleep(0.5)
+
         deadline = time.monotonic() + timeout
         poll_id = [1]
         ws = _ws.create_connection(ws_url, timeout=10, suppress_origin=True)
@@ -109,7 +95,7 @@ def _call_ai(prompt, ai_helper, timeout=120):
             pid = poll_id[0]
             poll_id[0] += 1
             ws.send(
-                _json.dumps(
+                json.dumps(
                     {
                         "id": pid,
                         "method": "Runtime.evaluate",
@@ -120,7 +106,7 @@ def _call_ai(prompt, ai_helper, timeout=120):
             for _ in range(200):
                 if time.monotonic() > deadline:
                     return None
-                msg = _json.loads(ws.recv())
+                msg = json.loads(ws.recv())
                 if msg.get("id") == pid:
                     return msg.get("result", {}).get("result", {}).get("value")
             return None
@@ -131,13 +117,13 @@ def _call_ai(prompt, ai_helper, timeout=120):
         })()""")
         time.sleep(0.3)
         pre_last = cdp_eval(f"""(function() {{
-            var els = document.querySelectorAll({_json.dumps(selector)});
+            var els = document.querySelectorAll({json.dumps(selector)});
             return els.length ? els[els.length - 1].innerText : null;
         }})()""")
         mid = poll_id[0]
         poll_id[0] += 1
         ws.send(
-            _json.dumps(
+            json.dumps(
                 {"id": mid, "method": "Input.insertText", "params": {"text": prompt}}
             )
         )
@@ -147,7 +133,7 @@ def _call_ai(prompt, ai_helper, timeout=120):
             mid = poll_id[0]
             poll_id[0] += 1
             ws.send(
-                _json.dumps(
+                json.dumps(
                     {
                         "id": mid,
                         "method": "Input.dispatchKeyEvent",
@@ -162,12 +148,13 @@ def _call_ai(prompt, ai_helper, timeout=120):
                 )
             )
             ws.recv()
+
         reply = None
         prev_reply = None
         time.sleep(3)
         while time.monotonic() < deadline:
             val = cdp_eval(f"""(function() {{
-                var els = document.querySelectorAll({_json.dumps(selector)});
+                var els = document.querySelectorAll({json.dumps(selector)});
                 if (!els.length) return null;
                 return els[els.length - 1].innerText || null;
             }})()""")
@@ -183,6 +170,55 @@ def _call_ai(prompt, ai_helper, timeout=120):
             raise RuntimeError("GeminiProxy: timed out waiting for response")
         return reply.strip()
 
+    if ai_helper == "google":
+        from google import genai
+        from google.genai import types
+
+        api_key = os.environ.get("GOOGLE_API_KEY")
+        if not api_key:
+            try:
+                import importlib.util
+
+                _spec = importlib.util.spec_from_file_location(
+                    "api_keys",
+                    "/home/henry/APPS/ContentCreator/Imager/core/api_keys.py",
+                )
+                _mod = importlib.util.module_from_spec(_spec)
+                _spec.loader.exec_module(_mod)
+                api_key = _mod.GOOGLE_API_KEY
+            except Exception:
+                raise RuntimeError(
+                    "GOOGLE_API_KEY not set and ContentCreator api_keys.py not found"
+                )
+
+        client = genai.Client(api_key=api_key)
+        response = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                temperature=0.7,
+                safety_settings=[
+                    types.SafetySetting(
+                        category=types.HarmCategory.HARM_CATEGORY_HARASSMENT,
+                        threshold=types.HarmBlockThreshold.BLOCK_NONE,
+                    ),
+                    types.SafetySetting(
+                        category=types.HarmCategory.HARM_CATEGORY_HATE_SPEECH,
+                        threshold=types.HarmBlockThreshold.BLOCK_NONE,
+                    ),
+                    types.SafetySetting(
+                        category=types.HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT,
+                        threshold=types.HarmBlockThreshold.BLOCK_NONE,
+                    ),
+                    types.SafetySetting(
+                        category=types.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
+                        threshold=types.HarmBlockThreshold.BLOCK_NONE,
+                    ),
+                ],
+            ),
+        )
+        return response.text.strip()
+
     # Default: opencode
     result = subprocess.run(
         ["/home/henry/.opencode/bin/opencode", "run", prompt],
@@ -194,514 +230,127 @@ def _call_ai(prompt, ai_helper, timeout=120):
     return ansi_escape.sub("", result.stdout).strip()
 
 
-def _extract_and_describe_characters_with_ai(narration_text, ai_helper):
-    """Single AI call: extract all characters from narration and get visual descriptions.
-    Returns dict of {name: {"desc": description, "words": [list of tags]}} or empty dict on failure."""
-    prompt = (
-        f"Read this story narration:\n\n{narration_text}\n\n"
-        f"List every character that appears more than once in the story. "
-        f"For each character, provide:\n"
-        f"1. A one-sentence visual description (height, build, eye color, hair, clothing, accessories).\n"
-        f"2. A list of words or short phrases from the text that refer to this character (pronouns like 'she/he', nicknames, or specific nouns).\n\n"
-        f"Output ONLY one character per line in this exact format:\n"
-        f"Name | visual description sentence|word1, word2, word3\n\n"
-        f"Example:\n"
-        f"Red Riding Hood | a young girl with long auburn hair, bright blue eyes, fair skin, "
-        f"wearing a red hooded cape over a white blouse and brown skirt|girl, she, granddaughter, child\n"
-        f"Wolf | a large grey wolf with sharp yellow eyes, dark fur, and a long bushy tail|wolf, he, beast, creature\n\n"
-        f"No numbering, no extra commentary, no blank lines between entries."
-    )
-    try:
-        reply = _call_ai(prompt, ai_helper, timeout=120)
-        if not reply:
-            return {}
-        result = {}
-        for line in reply.split("\n"):
-            line = line.strip()
-            if "|" not in line:
-                continue
-            parts = line.split("|")
-            name = parts[0].strip()
-            desc = parts[1].strip().strip('"').strip("'")
-            words = [w.strip() for w in parts[2].split(",")] if len(parts) > 2 else []
-            if name and desc:
-                if not desc.lower().startswith(name.lower()):
-                    desc = f"{name}, {desc}"
-                result[name] = {"desc": desc, "words": words}
-        return result
-    except Exception as e:
-        print(f"  AI character extraction failed: {e}")
-        return {}
-
-
-def extract_characters_from_narration(narration_text):
-    """
-    Extract character names from narration.
-    Looks for multi-word names and common story characters.
-    """
-    characters = set()
-
-    # Common story character patterns
-    common_patterns = [
-        r"\bLittle Red Riding Hood\b",
-        r"\bRed Riding Hood\b",
-        r"\bBig Bad Wolf\b",
-        r"\bWolf\b",
-        r"\bGrandmother\b",
-        r"\bGrandma\b",
-        r"\bMother\b",
-        r"\bMom\b",
-        r"\bWoodcutter\b",
-        r"\bWoodsman\b",
-        r"\bWoodman\b",
-        r"\bWood-cutter\b",
-        r"\bHunter\b",
-        r"\bCinderella\b",
-        r"\bSnow White\b",
-        r"\bSleeping Beauty\b",
-        r"\bRapunzel\b",
-        r"\bHansel\b",
-        r"\bGretel\b",
-        r"\bJack\b",
-        r"\bGiant\b",
-        r"\bFairy\b",
-        r"\bPrince\b",
-        r"\bPrincess\b",
-        r"\bKing\b",
-        r"\bQueen\b",
-    ]
-
-    # Check for common patterns first
-    for pattern in common_patterns:
-        matches = re.findall(pattern, narration_text, re.IGNORECASE)
-        for match in matches:
-            characters.add(match.title())
-
-    characters = list(characters)
-
-    # If no common patterns found, try to extract capitalized multi-word names
-    if not characters:
-        # Find sequences of capitalized words (potential names)
-        name_patterns = re.findall(
-            r"\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)\b", narration_text
-        )
-
-        # Filter out common non-name phrases
-        exclude_phrases = {
-            "Once Upon A Time",
-            "The End",
-            "And They",
-            "But She",
-            "So He",
-            "Remember To",
-            "Good Morning",
-            "What Big",
-            "All The Better",
-        }
-
-        word_counts = {}
-        for name in name_patterns:
-            if name not in exclude_phrases and len(name.split()) <= 4:
-                word_counts[name] = word_counts.get(name, 0) + 1
-
-        # Return names that appear at least 2 times
-        characters = {name for name, count in word_counts.items() if count >= 2}
-
-    return list(characters)
-
-
 def read_cref_file(cref_path):
-    """Parse an existing CREF.txt and return ({name: description}, {name: [narration_words]})."""
-    descriptions = {}
+    """Parse CREF.txt and return ({name: description}, {name: [narration_words]})."""
+    characters = {}
     narration_words = {}
     with open(cref_path, "r") as f:
         for line in f:
-            line = line.strip()
-            if not line or line.startswith("=") or "CHARACTER REFERENCE" in line:
+            stripped = line.strip()
+            if not stripped or "=" in stripped or "CHARACTER" in stripped.upper():
                 continue
-            # Format: description|narration_words
-            parts = line.split("|", 1)
-            desc = parts[0].strip()
-            if not desc:
-                continue
-            # Name is everything before the first comma
-            name = desc.split(",")[0].strip()
-            if name:
-                descriptions[name] = desc
-                words = (
-                    [w.strip().lower() for w in parts[1].split(",")]
-                    if len(parts) > 1
-                    else []
-                )
-                narration_words[name] = [w for w in words if w]
-    return descriptions, narration_words
-
-
-def generate_cref_file(
-    character_descriptions, output_dir, narration_text="", ai_helper="opencode"
-):
-    """Generate CREF.txt with character descriptions and narration word mappings."""
-    cref_path = os.path.join(output_dir, "CREF.txt")
-
-    # Handle both old format (str descriptions) and new format (dict with desc/words)
-    narration_words = {}
-    final_descriptions = {}
-    for char, data in character_descriptions.items():
-        if isinstance(data, dict):
-            final_descriptions[char] = data.get("desc", char)
-            narration_words[char] = data.get("words", [])
-        else:
-            final_descriptions[char] = data
-            narration_words[char] = []
-
-    # Write CREF file: Name, description|word1, word2, word3
-    with open(cref_path, "w") as f:
-        f.write("CHARACTER REFERENCE (CREF)\n")
-        f.write("=" * 40 + "\n\n")
-
-        for char, desc in final_descriptions.items():
-            words = ", ".join(narration_words[char])
-            f.write(f"{desc}|{words}\n")
-
-    print(f"Generated: {cref_path}")
-    return final_descriptions
-
-
-def get_main_character(narration_text, character_descriptions):
-    """Return the character description for the most-mentioned character in the narration."""
-    narration_lower = narration_text.lower()
-    sorted_chars = sorted(
-        character_descriptions.items(), key=lambda x: len(x[0]), reverse=True
-    )
-    best_char, best_count = None, 0
-    for char_name, description in sorted_chars:
-        # Use word-boundary match so "mother" inside "grandmother" isn't counted
-        count = len(
-            re.findall(r"\b" + re.escape(char_name.lower()) + r"\b", narration_lower)
-        )
-        if count > best_count:
-            best_count = count
-            best_char = description
-    if best_char:
-        return best_char
-    if character_descriptions:
-        return list(character_descriptions.values())[0]
-    return "a character"
-
-
-CHARACTER_NOUNS = [
-    "fairy godmother",
-    "grandmother",
-    "grandfather",
-    "woodcutter",
-    "woodsman",
-    "little girl",
-    "little boy",
-    "young girl",
-    "young boy",
-    "old woman",
-    "old man",
-    "girl",
-    "boy",
-    "mother",
-    "father",
-    "grandma",
-    "grandpa",
-    "wolf",
-    "hunter",
-    "prince",
-    "princess",
-    "king",
-    "queen",
-    "fairy",
-    "witch",
-    "wizard",
-    "giant",
-    "dragon",
-    "knight",
-    "rabbit",
-    "fox",
-    "bear",
-    "deer",
-    "bird",
-    "cat",
-    "dog",
-    "horse",
-    "man",
-    "woman",
-    "child",
-    "baby",
-    "sister",
-    "brother",
-    "son",
-    "daughter",
-    "wife",
-    "husband",
-    "friend",
-    "neighbor",
-    "teacher",
-    "doctor",
-    "dwarf",
-    "elf",
-    "goblin",
-    "troll",
-    "ogre",
-]
-
-STOP_WORDS = {
-    "a",
-    "an",
-    "the",
-    "is",
-    "was",
-    "are",
-    "were",
-    "be",
-    "been",
-    "being",
-    "have",
-    "has",
-    "had",
-    "do",
-    "does",
-    "did",
-    "will",
-    "would",
-    "could",
-    "should",
-    "may",
-    "might",
-    "can",
-    "shall",
-    "to",
-    "of",
-    "in",
-    "for",
-    "on",
-    "with",
-    "at",
-    "by",
-    "from",
-    "as",
-    "into",
-    "through",
-    "during",
-    "before",
-    "after",
-    "above",
-    "below",
-    "between",
-    "out",
-    "off",
-    "over",
-    "under",
-    "again",
-    "further",
-    "then",
-    "once",
-    "here",
-    "there",
-    "when",
-    "where",
-    "why",
-    "how",
-    "all",
-    "both",
-    "each",
-    "few",
-    "more",
-    "most",
-    "other",
-    "some",
-    "such",
-    "no",
-    "not",
-    "only",
-    "own",
-    "same",
-    "so",
-    "than",
-    "too",
-    "very",
-    "just",
-    "because",
-    "but",
-    "and",
-    "or",
-    "if",
-    "while",
-    "that",
-    "this",
-    "these",
-    "those",
-    "it",
-    "its",
-    "he",
-    "she",
-    "they",
-    "them",
-    "his",
-    "her",
-    "their",
-    "our",
-    "my",
-    "your",
-    "we",
-    "you",
-    "who",
-    "which",
-    "what",
-    "whom",
-    "whose",
-    "up",
-    "about",
-    "upon",
-    "time",
-    "lived",
-    "near",
-    "edge",
-    "great",
-    "went",
-    "said",
-    "asked",
-    "told",
-    "replied",
-    "thought",
-    "saw",
-    "found",
-    "took",
-    "gave",
-    "came",
-    "got",
-    "made",
-    "knew",
-    "looked",
-    "put",
-    "seemed",
-    "kept",
-    "began",
-    "felt",
-    "left",
-    "brought",
-    "showed",
-    "heard",
-    "played",
-    "ran",
-    "moved",
-    "lived",
-    "believed",
-    "held",
-    "called",
-    "tried",
-    "asked",
-    "needed",
-    "seemed",
-    "turned",
-    "wanted",
-    "gave",
-    "used",
-    "found",
-    "told",
-    "worked",
-    "may",
-    "set",
-    "free",
-    "long",
-    "back",
-    "right",
-    "too",
-    "little",
-    "much",
-    "even",
-    "well",
-    "just",
-    "like",
-    "very",
-    "also",
-    "still",
-    "already",
-    "always",
-    "never",
-    "often",
-    "sometimes",
-    "usually",
-    "really",
-    "quite",
-    "rather",
-    "almost",
-    "nearly",
-    "hardly",
-    "barely",
-    "simply",
-    "merely",
-    "exactly",
-    "precisely",
-    "especially",
-    "particularly",
-    "mainly",
-    "mostly",
-    "generally",
-    "normally",
-    "typically",
-    "commonly",
-    "frequently",
-    "occasionally",
-    "rarely",
-    "seldom",
-    "hardly",
-    "scarcely",
-    "barely",
-    "sweet",
-    "dear",
-    "old",
-    "young",
-    "big",
-    "good",
-    "bad",
-    "new",
-    "first",
-    "last",
-    "next",
-    "final",
-    "early",
-    "late",
-    "soon",
-    "now",
-    "today",
-    "tomorrow",
-    "yesterday",
-    "tonight",
-    "morning",
-    "afternoon",
-    "evening",
-    "night",
-    "day",
-    "week",
-    "month",
-    "year",
-    "hour",
-    "minute",
-    "second",
-    "once",
-    "twice",
-    "thrice",
-    "half",
-    "quarter",
-    "third",
-    "fourth",
-    "fifth",
-    "sixth",
-    "seventh",
-    "eighth",
-    "ninth",
-    "tenth",
-    "eleventh",
-    "twelfth",
-}
+            pipe_parts = stripped.split("|")
+            desc_part = pipe_parts[0].rstrip(".")
+            words_part = pipe_parts[1] if len(pipe_parts) > 1 else ""
+            comma_parts = desc_part.split(",", 1)
+            name = comma_parts[0].strip()
+            description = comma_parts[1].strip() if len(comma_parts) > 1 else ""
+            characters[name] = description
+            if words_part:
+                narration_words[name] = [
+                    w.strip() for w in words_part.split(",") if w.strip()
+                ]
+    return characters, narration_words
 
 
 def _extract_subjects(line):
-    """Extract character-like subjects from a narration line."""
+    CHARACTER_NOUNS = {
+        "girl",
+        "boy",
+        "woman",
+        "man",
+        "princess",
+        "prince",
+        "king",
+        "queen",
+        "witch",
+        "wizard",
+        "fairy",
+        "dragon",
+        "wolf",
+        "bear",
+        "rabbit",
+        "cat",
+        "dog",
+        "bird",
+        "fish",
+        "mouse",
+        "frog",
+        "snake",
+        "horse",
+        "elephant",
+        "monkey",
+        "lion",
+        "tiger",
+        "child",
+        "children",
+        "baby",
+        "mother",
+        "father",
+        "grandmother",
+        "grandfather",
+        "sister",
+        "brother",
+        "friend",
+        "teacher",
+        "student",
+        "doctor",
+        "farmer",
+        "soldier",
+        "knight",
+        "hero",
+        "villain",
+        "giant",
+        "dwarf",
+        "elf",
+        "goblin",
+        "troll",
+        "ogre",
+        "stepmother",
+        "stepfather",
+        "stepsister",
+        "stepbrother",
+        "grandma",
+        "grandpa",
+        "mom",
+        "dad",
+        "aunt",
+        "uncle",
+        "cousin",
+        "servant",
+        "maid",
+        "butler",
+        "guard",
+        "soldier",
+        "warrior",
+        "sorceress",
+        "sorcerer",
+        "enchantress",
+        "enchanter",
+        "she",
+        "he",
+        "they",
+        "her",
+        "him",
+        "them",
+    }
+    STOP_WORDS = {
+        "she",
+        "he",
+        "they",
+        "her",
+        "him",
+        "them",
+        "it",
+        "sweet",
+        "dear",
+        "old",
+        "young",
+        "little",
+        "big",
+        "good",
+        "bad",
+    }
     line_lower = line.lower()
     found = []
     for phrase in sorted(CHARACTER_NOUNS, key=len, reverse=True):
@@ -716,7 +365,6 @@ def _extract_subjects(line):
 
 
 def _score_subject(subject, char_name, char_desc):
-    """Score how well a subject maps to a character."""
     score = 0
     name_lower = char_name.lower()
     desc_lower = char_desc.lower()
@@ -730,6 +378,160 @@ def _score_subject(subject, char_name, char_desc):
         if len(word) > 2 and word in desc_lower:
             score += 2
     return score
+
+
+def rewrite_prompts_with_character_names(
+    source_lines, character_descriptions, ai_helper, narration_lines=None
+):
+    if not character_descriptions:
+        return source_lines
+    char_list = "\n".join(
+        f"- {name}: {desc}" for name, desc in character_descriptions.items()
+    )
+    numbered = "\n".join(f"{i + 1}. {l}" for i, l in enumerate(source_lines))
+    narration_context = ""
+    if narration_lines:
+        narration_context = (
+            f"Story narration (for pronoun context — use this to resolve 'she', 'he', 'they', etc.):\n"
+            + "\n".join(f"{i + 1}. {l}" for i, l in enumerate(narration_lines))
+            + "\n\n"
+        )
+    prompt = (
+        f"You are rewriting image generation prompts for a story.\n\n"
+        f"Characters in this story:\n{char_list}\n\n"
+        f"{narration_context}"
+        f"Rewrite each prompt below, replacing any generic subject words (she, he, the girl, the boy, etc.) with the matching character's exact name from the list above. "
+        f"Use the narration context above to resolve pronouns like 'she' or 'he' to the correct name. "
+        f"Keep everything else exactly the same — do not add, remove, or rephrase anything else.\n\n"
+        f"Output ONLY the rewritten prompts, one per line, numbered the same way.\n\n"
+        f"{numbered}"
+    )
+    try:
+        print(
+            f"  Rewriting {len(source_lines)} prompts with character names via {ai_helper}..."
+        )
+        reply = _call_ai(prompt, ai_helper, timeout=120)
+        if not reply:
+            return source_lines
+        rewritten = {}
+        for line in reply.split("\n"):
+            line = line.strip()
+            if not line:
+                continue
+            m = re.match(r"^(\d+)\.\s*(.*)", line)
+            if m:
+                idx = int(m.group(1)) - 1
+                if 0 <= idx < len(source_lines):
+                    rewritten[idx] = m.group(2).strip()
+        result = [rewritten.get(i, source_lines[i]) for i in range(len(source_lines))]
+        print(f"  Character name substitution done.")
+        return result
+    except Exception as e:
+        print(f"  AI subject rewrite failed ({e}) — using original lines")
+        return source_lines
+
+
+def get_scene_cref(
+    line, character_descriptions, main_char_desc, cref_narration_words=None
+):
+    line_lower = line.lower()
+    matched_chars = []
+    for char_name in character_descriptions:
+        if re.search(r"\b" + re.escape(char_name.lower()) + r"\b", line_lower):
+            if char_name not in matched_chars:
+                matched_chars.append(char_name)
+    subjects = _extract_subjects(line)
+    for subject in subjects:
+        best_char = None
+        best_score = 0
+        for char_name, char_desc in character_descriptions.items():
+            if char_name in matched_chars:
+                continue
+            score = _score_subject(subject, char_name, char_desc)
+            if cref_narration_words and char_name in cref_narration_words:
+                if subject.lower() in cref_narration_words[char_name]:
+                    score += 15
+            if score > best_score:
+                best_score = score
+                best_char = char_name
+        if best_char and best_char not in matched_chars:
+            matched_chars.append(best_char)
+    return [character_descriptions[c] for c in matched_chars]
+
+
+def generate_prompts_file(
+    narration_lines,
+    character_descriptions,
+    output_dir,
+    image_style="Stick Figure",
+    cref_narration_words=None,
+    ai_helper="opencode",
+):
+    prompts_path = os.path.join(output_dir, "prompts.txt")
+    rawprompt_path = os.path.join(output_dir, "RawPrompt.txt")
+    narration_text = "\n".join(narration_lines)
+
+    style_desc = STYLE_DESCRIPTIONS.get(image_style, STYLE_DESCRIPTIONS["Stick Figure"])
+
+    # Determine main character
+    narration_lower = narration_text.lower()
+    sorted_chars = sorted(
+        character_descriptions.items(), key=lambda x: len(x[0]), reverse=True
+    )
+    best_char, best_count = None, 0
+    for char_name, description in sorted_chars:
+        count = len(
+            re.findall(r"\b" + re.escape(char_name.lower()) + r"\b", narration_lower)
+        )
+        if count > best_count:
+            best_count = count
+            best_char = description
+    main_char_desc = best_char or (
+        list(character_descriptions.values())[0]
+        if character_descriptions
+        else "a character"
+    )
+
+    if os.path.exists(rawprompt_path):
+        with open(rawprompt_path, "r") as f:
+            source_lines = [l.strip() for l in f if l.strip()]
+        print(f"Using RawPrompt.txt ({len(source_lines)} prompts)")
+    else:
+        source_lines = narration_lines
+
+    source_lines = rewrite_prompts_with_character_names(
+        source_lines, character_descriptions, ai_helper, narration_lines
+    )
+
+    with open(prompts_path, "w") as f:
+        f.write("Video Generation Prompts\n")
+        f.write("=" * 40 + "\n\n")
+
+        for i, line in enumerate(source_lines, 1):
+            line = line.strip()
+            if not line:
+                continue
+            line = re.sub(r"^\d+\.\s*", "", line)
+            scene_crefs = get_scene_cref(
+                line, character_descriptions, "", cref_narration_words
+            )
+            if not scene_crefs:
+                scene_crefs = [main_char_desc] if main_char_desc else []
+            scene_cref = ", ".join(scene_crefs)
+            prompt = (
+                f"{style_desc}, {scene_cref}, {line}"
+                if scene_cref
+                else f"{style_desc}, {line}"
+            )
+
+            narration_sentence = (
+                narration_lines[i - 1].strip() if i - 1 < len(narration_lines) else line
+            )
+            narration_sentence = re.sub(r"^\d+\.\s*", "", narration_sentence)
+            f.write(f"Prompt {i}: {prompt}|||{narration_sentence}\n\n")
+
+    print(f"Generated: {prompts_path}")
+    return len(source_lines)
 
 
 COMFYUI_DIR = "/home/henry/comfy/ComfyUI"
@@ -878,7 +680,11 @@ def _generate_image_geminiproxy(prompt, output_path):
 
 
 def generate_reference_images(
-    character_descriptions, output_dir, image_style="Stick Figure", image_model=None
+    character_descriptions,
+    output_dir,
+    image_style="Stick Figure",
+    image_model=None,
+    ai_helper="opencode",
 ):
     if image_model is None:
         image_model = IMAGE_MODEL
@@ -1070,7 +876,8 @@ def generate_reference_images(
 
 def main():
     if len(sys.argv) != 2:
-        print("Usage: python prepare.py <narration_file>")
+        print("Usage: python prompts.py <narration_file>")
+        print("Example: python prompts.py narration.txt")
         sys.exit(1)
 
     narration_file = sys.argv[1]
@@ -1098,7 +905,7 @@ def main():
     if "=" in narration_lines[0] or "NARRATION" in narration_lines[0].upper():
         narration_lines = narration_lines[2:]
 
-    print(f"CREF CREATION PIPELINE")
+    print(f"PROMPTS PIPELINE")
     print(f"Input: {narration_file}")
     print(f"Lines: {len(narration_lines)}")
 
@@ -1109,44 +916,35 @@ def main():
         with open(project_config_path, "r") as f:
             project_config = json.load(f)
     ai_helper = project_config.get("ai_helper", "opencode")
-
-    cref_path = os.path.join(output_dir, "CREF.txt")
-    cref_narration_words = {}
-
-    if os.path.exists(cref_path):
-        print(f"CREF.txt already exists — skipping")
-        character_descriptions, cref_narration_words = read_cref_file(cref_path)
-        if not character_descriptions:
-            characters = extract_characters_from_narration(narration_text)
-            character_descriptions = {c: c for c in characters}
-        else:
-            print(f"Loaded CREF characters: {', '.join(character_descriptions.keys())}")
-    else:
-        print(f"Extracting characters via {ai_helper}...")
-        character_descriptions = _extract_and_describe_characters_with_ai(
-            narration_text, ai_helper
-        )
-        if not character_descriptions:
-            print("  AI extraction failed — falling back to regex")
-            characters = extract_characters_from_narration(narration_text)
-            character_descriptions = {
-                c: f"{c}, a character with distinctive features" for c in characters
-            }
-        else:
-            print(f"Characters: {', '.join(character_descriptions.keys())}")
-        character_descriptions = generate_cref_file(
-            character_descriptions, output_dir, narration_text, ai_helper
-        )
-        _, cref_narration_words = read_cref_file(cref_path)
-
-    print(f"\nCREF creation complete. Run prompts.py next to generate prompts.")
-
-    # Generate CREF reference images
     image_style = project_config.get("image_style", "Stick Figure")
     image_model = project_config.get("image_model", IMAGE_MODEL)
-    generate_reference_images(
-        character_descriptions, output_dir, image_style, image_model
-    )
+
+    cref_path = os.path.join(output_dir, "CREF.txt")
+    prompts_path = os.path.join(output_dir, "prompts.txt")
+
+    character_descriptions, cref_narration_words = {}, {}
+    if os.path.exists(cref_path):
+        character_descriptions, cref_narration_words = read_cref_file(cref_path)
+        print(f"Loaded {len(character_descriptions)} CREF characters")
+    else:
+        print("CREF.txt not found — run prepare.py first")
+        sys.exit(1)
+
+    # Step 1: Generate prompts.txt
+    if os.path.exists(prompts_path):
+        print(f"prompts.txt already exists — skipping")
+    else:
+        num_prompts = generate_prompts_file(
+            narration_lines,
+            character_descriptions,
+            output_dir,
+            image_style,
+            cref_narration_words,
+            ai_helper,
+        )
+        print(f"Generated {num_prompts} prompts")
+
+    print("\nDone!")
 
 
 if __name__ == "__main__":
