@@ -379,18 +379,15 @@ def _extract_and_describe_characters_with_ai(narration_text, ai_helper):
     """Single AI call: extract all characters from narration and get visual descriptions.
     Returns dict of {name: {"desc": description, "words": [list of tags]}} or empty dict on failure."""
     prompt = (
-        f"Read this story narration:\n\n{narration_text}\n\n"
-        f"List every character that appears more than once in the story. "
-        f"For each character, provide:\n"
-        f"1. A one-sentence visual description (height, build, eye color, hair, clothing, accessories).\n"
-        f"2. A list of words or short phrases from the text that refer to this character (pronouns like 'she/he', nicknames, or specific nouns).\n\n"
-        f"Output ONLY one character per line in this exact format:\n"
-        f"Name | visual description sentence|word1, word2, word3\n\n"
-        f"Example:\n"
-        f"Red Riding Hood | a young girl with long auburn hair, bright blue eyes, fair skin, "
-        f"wearing a red hooded cape over a white blouse and brown skirt|girl, she, granddaughter, child\n"
-        f"Wolf | a large grey wolf with sharp yellow eyes, dark fur, and a long bushy tail|wolf, he, beast, creature\n\n"
-        f"No numbering, no extra commentary, no blank lines between entries."
+        f"Read this story narration: {narration_text}.\n\n"
+        f"Identify every recurring character in the story. To ensure strict visual consistency (CREF) for AI image generation, create a definitive Character Bible.\n"
+        f"For each character, provide a one-sentence visual description that remains identical throughout the story.\n\n"
+        f"Requirements for the description:\n\n"
+        f"You must include: Height/build, hair style and color, eye color, specific clothing style/color, and key accessories.\n\n"
+        f"If these details are not in the text, you must infer or invent them to fit the story’s setting and mood.\n\n"
+        f"Ensure the traits are distinct enough to be easily recognized across different image prompts.\n\n"
+        f"Output Format:\n"
+        f"Character Name | Visual description sentence | Reference words from text"
     )
     try:
         reply = _call_ai(prompt, ai_helper, timeout=120)
