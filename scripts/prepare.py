@@ -69,6 +69,14 @@ KEY_SERVICE_URL = "http://localhost:7755"
 
 def _call_ai(prompt, ai_helper, timeout=120):
     """Send a prompt to the configured AI helper and return the text reply."""
+    from datetime import datetime
+
+    ts = datetime.now().strftime("%H:%M:%S")
+    prompt_log = os.path.join(PARENT_DIR, "prompt.log")
+    safe_prompt = prompt.replace("\n", " ").replace("\r", " ")
+    with open(prompt_log, "a") as f:
+        f.write(f"[{ts}] {ai_helper}: {safe_prompt}\n")
+
     if ai_helper == "claude":
         resp = requests.post(
             f"{KEY_SERVICE_URL}/tmux/chat",
@@ -181,6 +189,179 @@ def _call_ai(prompt, ai_helper, timeout=120):
         ws.close()
         if not reply:
             raise RuntimeError("GeminiProxy: timed out waiting for response")
+        return reply.strip()
+
+    # Proxy helpers: delegate to CDP-based implementations
+    if ai_helper in (
+        "chatgptproxy",
+        "copilotproxy",
+        "deepseekproxy",
+        "perplexityproxy",
+        "xiaomiproxy",
+    ):
+        import websocket as _ws
+        import json as _json
+
+        tab_urls = {
+            "chatgptproxy": "chatgpt.com",
+            "copilotproxy": "copilot.microsoft.com",
+            "deepseekproxy": "chat.deepseek.com",
+            "perplexityproxy": "perplexity.ai",
+            "xiaomiproxy": "chat.xiaoai.com",
+        }
+        selectors = {
+            "chatgptproxy": '[data-message-author-role="assistant"]',
+            "copilotproxy": '[data-testid="ai-message"]',
+            "deepseekproxy": '.ds-markdown, .message-assistant, [class*="assistant"], [class*="response"], .chat-message-assistant',
+            "perplexityproxy": '[data-testid="text-response"], [class*="response"], [class*="answer"]',
+            "xiaomiproxy": '[class*="assistant"], [class*="response"], .chat-message-assistant',
+        }
+        tab_url = tab_urls[ai_helper]
+        selector = selectors[ai_helper]
+        cdp_port = 9222
+
+        resp = requests.get(f"http://localhost:{cdp_port}/json", timeout=3)
+        tabs = [
+            t
+            for t in resp.json()
+            if t.get("type") == "page" and tab_url in t.get("url", "")
+        ]
+        if not tabs:
+            raise RuntimeError(f"{ai_helper}: no Chrome tab found for {tab_url}")
+        tab = tabs[0]
+        ws_url = tab["webSocketDebuggerUrl"]
+        requests.get(
+            f"http://localhost:{cdp_port}/json/activate/{tab['id']}", timeout=3
+        )
+        time.sleep(0.5)
+        deadline = time.monotonic() + timeout
+        poll_id = [1]
+        ws = _ws.create_connection(ws_url, timeout=10, suppress_origin=True)
+
+        def cdp_eval(js):
+            if time.monotonic() > deadline:
+                return None
+            pid = poll_id[0]
+            poll_id[0] += 1
+            ws.send(
+                _json.dumps(
+                    {
+                        "id": pid,
+                        "method": "Runtime.evaluate",
+                        "params": {"expression": js},
+                    }
+                )
+            )
+            for _ in range(200):
+                if time.monotonic() > deadline:
+                    return None
+                msg = _json.loads(ws.recv())
+                if msg.get("id") == pid:
+                    return msg.get("result", {}).get("result", {}).get("value")
+            return None
+
+        cdp_eval("""(function() {
+            var el = document.querySelector('textarea, [contenteditable="true"], [role="textbox"], input[type="text"]');
+            if (el) { el.focus(); el.click(); }
+        })()""")
+        time.sleep(0.3)
+
+        existing_count = cdp_eval(f"""(function() {{
+            return document.querySelectorAll({_json.dumps(selector)}).length;
+        }})()""")
+        existing_count = int(existing_count) if existing_count else 0
+
+        ws.send(
+            _json.dumps(
+                {
+                    "id": poll_id[0],
+                    "method": "Input.insertText",
+                    "params": {"text": prompt},
+                }
+            )
+        )
+        ws.recv()
+        poll_id[0] += 1
+        time.sleep(0.2)
+
+        for ev in ("keyDown", "keyUp"):
+            ws.send(
+                _json.dumps(
+                    {
+                        "id": poll_id[0],
+                        "method": "Input.dispatchKeyEvent",
+                        "params": {
+                            "type": ev,
+                            "key": "Enter",
+                            "code": "Enter",
+                            "windowsVirtualKeyCode": 13,
+                            "nativeVirtualKeyCode": 13,
+                        },
+                    }
+                )
+            )
+            ws.recv()
+            poll_id[0] += 1
+        ws.close()
+
+        time.sleep(1)
+        for _ in range(5):
+            resp2 = requests.get(f"http://localhost:{cdp_port}/json", timeout=3)
+            tabs2 = [
+                t
+                for t in resp2.json()
+                if t.get("type") == "page" and tab_url in t.get("url", "")
+            ]
+            if tabs2 and tabs2[0]["webSocketDebuggerUrl"] != ws_url:
+                ws_url = tabs2[0]["webSocketDebuggerUrl"]
+                break
+            time.sleep(0.5)
+
+        pw = _ws.create_connection(ws_url, timeout=10, suppress_origin=True)
+        pw_poll_id = [1]
+
+        def pw_eval(js):
+            if time.monotonic() > deadline:
+                return None
+            pid = pw_poll_id[0]
+            pw_poll_id[0] += 1
+            pw.send(
+                _json.dumps(
+                    {
+                        "id": pid,
+                        "method": "Runtime.evaluate",
+                        "params": {"expression": js},
+                    }
+                )
+            )
+            for _ in range(100):
+                if time.monotonic() > deadline:
+                    return None
+                msg = _json.loads(pw.recv())
+                if msg.get("id") == pid:
+                    return msg.get("result", {}).get("result", {}).get("value")
+            return None
+
+        reply = None
+        prev_text = None
+        time.sleep(1)
+        while time.monotonic() < deadline:
+            text = pw_eval(f"""(function() {{
+                var els = document.querySelectorAll({_json.dumps(selector)});
+                if (els.length <= {existing_count}) return null;
+                var last = els[els.length - 1];
+                return last.innerText.trim() || null;
+            }})()""")
+            if text and text == prev_text:
+                reply = text
+                break
+            prev_text = text
+            time.sleep(1)
+        pw.close()
+        if not reply and prev_text:
+            reply = prev_text
+        if not reply:
+            raise RuntimeError(f"{ai_helper}: timed out waiting for response")
         return reply.strip()
 
     # Default: opencode
@@ -888,6 +1069,8 @@ def generate_reference_images(
     style_desc = STYLE_DESCRIPTIONS.get(image_style, STYLE_DESCRIPTIONS["Stick Figure"])
 
     for char_name, description in character_descriptions.items():
+        if char_name.lower() == "filler":
+            continue
         safe_name = re.sub(r"[^a-zA-Z0-9]", "_", char_name).lower()
 
         if os.path.exists(os.path.join(output_dir, f"ref_{safe_name}.png")):

@@ -54,6 +54,16 @@ KEY_SERVICE_URL = "http://localhost:7755"
 
 def _call_ai(prompt, ai_helper, timeout=120):
     """Send a prompt to the configured AI helper and return the text reply."""
+    from datetime import datetime
+
+    ts = datetime.now().strftime("%H:%M:%S")
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    parent_dir = os.path.dirname(script_dir)
+    prompt_log = os.path.join(parent_dir, "prompt.log")
+    safe_prompt = prompt.replace("\n", " ").replace("\r", " ")
+    with open(prompt_log, "a") as f:
+        f.write(f"[{ts}] {ai_helper}: {safe_prompt}\n")
+
     if ai_helper == "claude":
         resp = requests.post(
             f"{KEY_SERVICE_URL}/tmux/chat",
@@ -397,7 +407,6 @@ def rewrite_prompts_with_character_names(
             + "\n\n"
         )
     prompt = (
-
         f"Act as a Prompt Engineer. I have a list of base prompts and a list of specific CREF characters. Your task is to rewrite the base prompts for EACH character in the list."
         f"Rules:"
         f"Replace the generic subject in the base prompt(e.g., 'a woman','he','she', etc.) with the Character Name and Character description."
@@ -407,7 +416,6 @@ def rewrite_prompts_with_character_names(
         f"Character List: {char_list}\n\n"
         f"Keep everything else exactly the same — do not add, remove, or rephrase anything else.\n\n"
         f"Output ONLY the rewritten prompts, one per line, numbered the same way.\n\n"
-
     )
     try:
         print(

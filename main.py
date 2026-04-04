@@ -705,7 +705,6 @@ HTML = r"""
         }
 
         function deleteBrowseEntry(btn, title, name, subpath) {
-            if (!confirm(`Delete "${name}"?`)) return;
             fetch('/api/browse/delete', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
@@ -1746,8 +1745,9 @@ def _call_ai(prompt, ai_helper, timeout=120):
     from datetime import datetime
 
     ts = datetime.now().strftime("%H:%M:%S")
+    safe_prompt = prompt.replace("\n", " ").replace("\r", " ")
     with open(APP_PROMPT_LOG, "a") as f:
-        f.write(f"[{ts}] {ai_helper}: {prompt}\n")
+        f.write(f"[{ts}] {ai_helper}: {safe_prompt}\n")
 
     if ai_helper == "claude":
         _ensure_key_service()
@@ -3382,13 +3382,13 @@ def _generate_narration(
     project_dir = project_dir or os.path.dirname(narration_path)
     rawprompt_path = os.path.join(project_dir, "RawPrompt.txt")
 
-    from datetime import datetime
-
-    ts = datetime.now().strftime("%H:%M:%S")
-    with open(APP_PROMPT_LOG, "a") as f:
-        f.write(f"[{ts}] {ai_helper}: {prompt}\n")
-
     if ai_helper == "claude":
+        from datetime import datetime
+
+        ts = datetime.now().strftime("%H:%M:%S")
+        safe_prompt = prompt.replace("\n", " ").replace("\r", " ")
+        with open(APP_PROMPT_LOG, "a") as f:
+            f.write(f"[{ts}] {ai_helper}: {safe_prompt}\n")
         _ensure_key_service()
         resp = requests.post(
             f"{KEY_SERVICE_URL}/tmux/chat",
