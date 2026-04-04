@@ -88,9 +88,9 @@ HTML = r"""
     <title>Video Generator</title>
     <style>
         body { font-family: Arial, sans-serif; margin: 0; background: #f5f5f5; }
-        .container { display: flex; height: 100vh; }
+        .container { display: flex; height: 100vh; overflow: hidden; }
         .main-panel { flex: 2; padding: 15px 20px; display: flex; flex-direction: column; overflow: hidden; }
-        .log-panel { flex: 1; background: #1e1e1e; color: #0f0; padding: 10px; display: flex; flex-direction: column; font-family: monospace; font-size: 10px; border-left: 3px solid #333; overflow: hidden; }
+        .log-panel { width: 320px; background: #1e1e1e; color: #0f0; padding: 10px; display: flex; flex-direction: column; font-family: monospace; font-size: 10px; border-left: 3px solid #333; overflow: hidden; }
         #logContent { flex: 1; overflow-y: auto; overflow-x: hidden; }
         #logContent::-webkit-scrollbar { width: 8px; }
         #logContent::-webkit-scrollbar-track { background: #111; }
@@ -162,6 +162,27 @@ HTML = r"""
                 </select>
                 <button class="btn" onclick="resetPipelineFlag()" style="background: #6c757d; font-size:12px; padding: 5px 10px;" title="Reset pipeline running flag">🔄</button>
                 <button class="btn" onclick="checkComfyQueue()" style="background: #6c757d; font-size:12px; padding: 5px 10px;" title="Check ComfyUI Queue">Confy</button>
+                <select id="ai_helper" style="padding:5px 8px; font-size:12px; border-radius:4px; border:1px solid #ccc;">
+                    <option value="opencode">OpenCode</option>
+                    <option value="claude">Claude</option>
+                    <option value="copilotproxy">CopilotProxy</option>
+                    <option value="deepseekproxy">DeepSeekProxy</option>
+                    <option value="geminiproxy">GeminiProxy</option>
+                    <option value="chatgptproxy">ChatGPTProxy</option>
+                    <option value="perplexityproxy">PerplexityProxy</option>
+                    <option value="xiaomiproxy">XiaomiProxy</option>
+                    <option value="google">Google</option>
+                </select>
+                <select id="image_model" style="padding:5px 8px; font-size:12px; border-radius:4px; border:1px solid #ccc;">
+                    <option value="Juggernaut-XL_v9_RunDiffusionPhoto_v2.safetensors">Juggernaut XL v9</option>
+                    <option value="RealVisXL_V5.0_Lightning_fp16.safetensors">RealVisXL V5 Lightning</option>
+                    <option value="sd_xl_base_1.0.safetensors">SDXL Base 1.0</option>
+                    <option value="v1-5-pruned-emaonly.safetensors">SD 1.5</option>
+                    <option value="flux1-dev.safetensors">Flux 1 Dev</option>
+                    <option value="flux1-schnell.safetensors">Flux 1 Schnell</option>
+                    <option value="flux1-schnell-fp8.safetensors">Flux 1 Schnell fp8</option>
+                    <option value="geminiproxy">GeminiProxy</option>
+                </select>
             </h1>
             <div class="tab-bar">
                 <div class="tab active" id="tab-config" onclick="switchTab('config')">⚙️ Config</div>
@@ -298,20 +319,6 @@ HTML = r"""
                         <input type="number" id="clip_count" min="0" value="0" style="width:60px; flex:none;">
                     </div>
                     <div class="form-group">
-                        <label>AI Helper:</label>
-                        <select id="ai_helper">
-                            <option value="opencode">OpenCode</option>
-                            <option value="claude">Claude</option>
-                            <option value="copilotproxy">CopilotProxy</option>
-                            <option value="deepseekproxy">DeepSeekProxy</option>
-                            <option value="geminiproxy">GeminiProxy</option>
-                            <option value="chatgptproxy">ChatGPTProxy</option>
-                            <option value="perplexityproxy">PerplexityProxy</option>
-                            <option value="xiaomiproxy">XiaomiProxy</option>
-                            <option value="google">Google</option>
-                        </select>
-                    </div>
-                    <div class="form-group">
                         <label>Video:</label>
                         <input type="checkbox" id="generate_video" checked style="width:auto; flex:none;" onchange="toggleImageModel()">
                         <span style="font-size:12px; color:#888;">unchecked = image only</span>
@@ -338,19 +345,6 @@ HTML = r"""
                                 <input type="checkbox" id="step_assemble" checked style="width:auto;" /> Assemble
                             </label>
                         </div>
-                    </div>
-                    <div class="form-group" id="imageModelGroup" style="opacity:0.4; pointer-events:none;">
-                        <label>Image Model:</label>
-                        <select id="image_model">
-                            <option value="Juggernaut-XL_v9_RunDiffusionPhoto_v2.safetensors">Juggernaut XL v9</option>
-                            <option value="RealVisXL_V5.0_Lightning_fp16.safetensors">RealVisXL V5 Lightning</option>
-                            <option value="sd_xl_base_1.0.safetensors">SDXL Base 1.0</option>
-                            <option value="v1-5-pruned-emaonly.safetensors">SD 1.5</option>
-                            <option value="flux1-dev.safetensors">Flux 1 Dev</option>
-                            <option value="flux1-schnell.safetensors">Flux 1 Schnell</option>
-                            <option value="flux1-schnell-fp8.safetensors">Flux 1 Schnell fp8</option>
-                            <option value="geminiproxy">GeminiProxy</option>
-                        </select>
                     </div>
                     <br>
                     <button class="btn-save" onclick="saveConfig()">Save</button>
@@ -385,33 +379,10 @@ HTML = r"""
                         </div>
                         <!-- Right: controls -->
                         <div style="flex:1.4; min-width:260px; display:flex; flex-direction:column; gap:8px;">
-                            <!-- Provider -->
+                            <!-- Caption Position -->
                             <div class="form-group">
-                                <label style="width:90px;">Provider:</label>
-                                <select id="thumb_image_model" style="flex:1;" onchange="saveThumbSetting('thumb_image_model', this.value)">
-                                    <option value="geminiproxy">GeminiProxy</option>
-                                    <option value="Juggernaut-XL_v9_RunDiffusionPhoto_v2.safetensors">Juggernaut XL v9</option>
-                                    <option value="RealVisXL_V5.0_Lightning_fp16.safetensors">RealVisXL V5 Lightning</option>
-                                    <option value="flux1-dev.safetensors">Flux 1 Dev</option>
-                                    <option value="flux1-schnell-fp8.safetensors">Flux 1 Schnell fp8</option>
-                                        </select>
-                            </div>
-                            <!-- Image Style + Caption Position -->
-                            <div class="form-group">
-                                <label style="width:90px;">Image Style:</label>
-                                <select id="thumb_image_style" style="flex:1;">
-                                    <option value="3D Render">3D Render</option>
-                                    <option value="Anime">Anime</option>
-                                    <option value="Cartoon">Cartoon</option>
-                                    <option value="Cartoon Reality">Cartoon Reality</option>
-                                    <option value="Cinematic">Cinematic</option>
-                                    <option value="Comic Book">Comic Book</option>
-                                    <option value="Dark Fantasy">Dark Fantasy</option>
-                                    <option value="Oil Painting">Oil Painting</option>
-                                    <option value="Watercolor">Watercolor</option>
-                                    <option value="Stick Figure">Stick Figure</option>
-                                </select>
-                                <div style="display:flex; gap:3px; margin-left:8px;">
+                                <label style="width:90px;">Caption Pos:</label>
+                                <div style="display:flex; gap:3px;">
                                     <button id="cappos-top"    onclick="setCapPos('top')"    style="padding:2px 7px; font-size:11px; border-radius:3px; border:1px solid #ccc; background:#e9ecef; cursor:pointer;">top</button>
                                     <button id="cappos-middle" onclick="setCapPos('middle')" style="padding:2px 7px; font-size:11px; border-radius:3px; border:1px solid #ccc; background:#e9ecef; cursor:pointer;">middle</button>
                                     <button id="cappos-bottom" onclick="setCapPos('bottom')" style="padding:2px 7px; font-size:11px; border-radius:3px; border:1px solid #ccc; background:#e9ecef; cursor:pointer;">bottom</button>
@@ -482,22 +453,32 @@ HTML = r"""
         </div>
 
         <div class="log-panel" id="logPanel">
-            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; border-bottom:1px solid #444; padding-bottom:6px;">
-                <h3 style="margin:0; color:#fff; font-size:13px;">📋 Activity Log</h3>
-                <button onclick="clearLog()" style="background:#555; color:#ccc; border:none; padding:2px 8px; font-size:11px; border-radius:3px; cursor:pointer;">Clear</button>
+            <div style="display:flex; gap:0; margin-bottom:8px; border-bottom:1px solid #444;">
+                <div id="logSubTab-activity" class="log-subtab active" onclick="switchLogSubTab('activity')" style="flex:1; text-align:center; padding:6px 8px; font-size:11px; cursor:pointer; background:#333; color:#fff; border-radius:4px 4px 0 0;">📋 Activity</div>
+                <div id="logSubTab-prompt" class="log-subtab" onclick="switchLogSubTab('prompt')" style="flex:1; text-align:center; padding:6px 8px; font-size:11px; cursor:pointer; background:#222; color:#888; border-radius:4px 4px 0 0;">💬 Prompts</div>
             </div>
-            <div id="logContent"></div>
+            <div id="logPanelActivity" style="flex:1; display:flex; flex-direction:column; overflow:hidden;">
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+                    <span style="color:#fff; font-size:12px; font-weight:bold;">Activity Log</span>
+                    <button onclick="clearLog()" style="background:#555; color:#ccc; border:none; padding:2px 8px; font-size:10px; border-radius:3px; cursor:pointer;">Clear</button>
+                </div>
+                <div id="logContent" style="flex:1; overflow-y:auto; overflow-x:hidden;"></div>
+            </div>
+            <div id="logPanelPrompt" style="flex:1; display:none; flex-direction:column; overflow:hidden;">
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+                    <span style="color:#fff; font-size:12px; font-weight:bold;">Prompt Log</span>
+                    <button onclick="clearPromptLog()" style="background:#555; color:#ccc; border:none; padding:2px 8px; font-size:10px; border-radius:3px; cursor:pointer;">Clear</button>
+                </div>
+                <div id="promptLogContent" style="flex:1; overflow-y:auto; overflow-x:hidden;"></div>
+            </div>
         </div>
-        <div id="logToggle" style="display:none; position:fixed; right:0; top:50%; transform:translateY(-50%); background:#333; color:#fff; padding:10px 6px; cursor:pointer; border-radius:6px 0 0 6px; font-size:14px; z-index:1000;" onclick="showLogPanel()" title="Show Activity Log">◀</div>
+        <div id="logToggle" style="position:fixed; right:0; top:50%; transform:translateY(-50%); background:#333; color:#fff; padding:12px 6px; cursor:pointer; border-radius:6px 0 0 6px; font-size:14px; z-index:1000;" onclick="toggleLogPanel()" title="Toggle Logs">◀</div>
     </div>
     
     <script>
         function toggleImageModel() {
-            const isVideo = document.getElementById('generate_video').checked;
-            const imgGroup = document.getElementById('imageModelGroup');
-            imgGroup.style.opacity = isVideo ? '0.4' : '1';
-            imgGroup.style.pointerEvents = isVideo ? 'none' : 'auto';
             const videoModelGroup = document.getElementById('videoModelGroup');
+            const isVideo = document.getElementById('generate_video').checked;
             videoModelGroup.style.opacity = isVideo ? '1' : '0.4';
             videoModelGroup.style.pointerEvents = isVideo ? 'auto' : 'none';
         }
@@ -509,7 +490,7 @@ HTML = r"""
             entry.className = 'log-entry';
             entry.innerHTML = `<span class="log-time">[${time}]</span> <span class="log-${type}">${message}</span>`;
             logContent.appendChild(entry);
-            logContent.scrollTop = logContent.scrollHeight;
+            requestAnimationFrame(() => { logContent.scrollTop = logContent.scrollHeight; });
             fetch('/api/log', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
@@ -520,6 +501,42 @@ HTML = r"""
         function clearLog() {
             document.getElementById('logContent').innerHTML = '';
             fetch('/api/log/clear', {method: 'POST'});
+        }
+
+        function logPrompt(helper, prompt) {
+            const promptLogContent = document.getElementById('promptLogContent');
+            const time = new Date().toLocaleTimeString();
+            const entry = document.createElement('div');
+            entry.className = 'log-entry';
+            entry.innerHTML = `<span class="log-time">[${time}]</span> <span class="log-info">${helper}:</span> <span style="color:#ccc;">${prompt.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</span>`;
+            promptLogContent.appendChild(entry);
+            requestAnimationFrame(() => { promptLogContent.scrollTop = promptLogContent.scrollHeight; });
+            fetch('/api/log/prompt', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({time, helper, prompt})
+            });
+        }
+
+        function clearPromptLog() {
+            document.getElementById('promptLogContent').innerHTML = '';
+            fetch('/api/log/prompt/clear', {method: 'POST'});
+        }
+
+        function loadPromptLog() {
+            const promptLogContent = document.getElementById('promptLogContent');
+            fetch('/api/log/prompt/load')
+                .then(r => r.json())
+                .then(data => {
+                    promptLogContent.innerHTML = '';
+                    (data.lines || []).forEach(entry => {
+                        const div = document.createElement('div');
+                        div.className = 'log-entry';
+                        div.innerHTML = `<span class="log-time">[${entry.time}]</span> <span class="log-info">${entry.helper}:</span> <span style="color:#ccc;">${entry.prompt.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</span>`;
+                        promptLogContent.appendChild(div);
+                    });
+                    requestAnimationFrame(() => { promptLogContent.scrollTop = promptLogContent.scrollHeight; });
+                });
         }
 
         function checkComfyQueue() {
@@ -549,15 +566,6 @@ HTML = r"""
                 const panelEl = document.getElementById('panel-' + t);
                 if (panelEl) panelEl.style.display = t === name ? 'block' : 'none';
             });
-            const logPanel = document.getElementById('logPanel');
-            const logToggle = document.getElementById('logToggle');
-            if (name === 'prompts') {
-                if (logPanel) logPanel.style.display = 'none';
-                if (logToggle) logToggle.style.display = 'block';
-            } else {
-                if (logPanel) logPanel.style.display = 'block';
-                if (logToggle) logToggle.style.display = 'none';
-            }
             const title = document.getElementById('projectSelect').value;
             if (name === 'config') loadConfig(title);
             if (name === 'narration') loadNarration(title);
@@ -569,11 +577,41 @@ HTML = r"""
             if (name === 'play') loadPlay(title);
         }
 
-        function showLogPanel() {
+        function switchLogSubTab(name) {
+            const activityTab = document.getElementById('logSubTab-activity');
+            const promptTab = document.getElementById('logSubTab-prompt');
+            if (name === 'activity') {
+                activityTab.style.background = '#333';
+                activityTab.style.color = '#fff';
+                promptTab.style.background = '#222';
+                promptTab.style.color = '#888';
+            } else {
+                promptTab.style.background = '#333';
+                promptTab.style.color = '#fff';
+                activityTab.style.background = '#222';
+                activityTab.style.color = '#888';
+            }
+            document.getElementById('logPanelActivity').style.display = name === 'activity' ? 'flex' : 'none';
+            document.getElementById('logPanelPrompt').style.display = name === 'prompt' ? 'flex' : 'none';
+            if (name === 'activity') {
+                const logContent = document.getElementById('logContent');
+                if (logContent) logContent.scrollTop = logContent.scrollHeight;
+            } else {
+                const promptLogContent = document.getElementById('promptLogContent');
+                if (promptLogContent) promptLogContent.scrollTop = promptLogContent.scrollHeight;
+            }
+        }
+
+        function toggleLogPanel() {
             const logPanel = document.getElementById('logPanel');
             const logToggle = document.getElementById('logToggle');
-            if (logPanel) logPanel.style.display = 'block';
-            if (logToggle) logToggle.style.display = 'none';
+            if (logPanel.style.display === 'none') {
+                logPanel.style.display = 'flex';
+                logToggle.innerHTML = '▶';
+            } else {
+                logPanel.style.display = 'none';
+                logToggle.innerHTML = '◀';
+            }
         }
 
         let _browseSubpath = '';
@@ -628,7 +666,10 @@ HTML = r"""
                         delBtn.style.cssText = 'background:none; border:none; color:#c00; cursor:pointer; font-size:13px; line-height:1; padding:0 2px;';
                         delBtn.title = 'Delete';
                         delBtn.textContent = '✕';
-                        delBtn.onclick = () => deleteBrowseEntry(delBtn, title, f.name, subpath);
+                        delBtn.setAttribute('type', 'button');
+                        delBtn.setAttribute('data-action', 'delete');
+                        delBtn.setAttribute('data-name', f.name);
+                        delBtn.setAttribute('data-subpath', subpath || '');
                         row.appendChild(nameSpan);
                         row.appendChild(labelSpan);
                         if (f.size) {
@@ -735,8 +776,8 @@ HTML = r"""
                 .then(r => r.json())
                 .then(data => {
                     const thumbModel = data.thumb_image_model || data.image_model;
-                    if (thumbModel) document.getElementById('thumb_image_model').value = thumbModel;
-                    if (data.image_style) document.getElementById('thumb_image_style').value = data.image_style;
+                    if (thumbModel) document.getElementById('image_model').value = thumbModel;
+                    if (data.image_style) document.getElementById('image_style').value = data.image_style;
                     const capPos = data.thumb_caption_position || 'bottom';
                     setCapPos(capPos, false);
                     if (data.thumb_font_name) document.getElementById('thumb_font_name').value = data.thumb_font_name;
@@ -765,14 +806,6 @@ HTML = r"""
             });
         }
 
-        function saveThumbSetting(key, value) {
-            const title = document.getElementById('projectSelect').value;
-            if (!title) return;
-            const payload = {title};
-            payload[key] = value;
-            fetch('/api/config', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});
-        }
-
         function rebakeThumbnail() {
             const title = document.getElementById('projectSelect').value;
             if (!title) return log('Select a project first', 'error');
@@ -799,8 +832,8 @@ HTML = r"""
         function regenerateThumbnail() {
             const title = document.getElementById('projectSelect').value;
             if (!title) return log('Select a project first', 'error');
-            const imageModel = document.getElementById('thumb_image_model').value;
-            const imageStyle = document.getElementById('thumb_image_style').value;
+            const imageModel = document.getElementById('image_model').value;
+            const imageStyle = document.getElementById('image_style').value;
             const aiHelper = document.getElementById('ai_helper').value;
             const wrap = document.getElementById('thumbPreviewWrap');
             wrap.style.cursor = 'wait';
@@ -1041,7 +1074,6 @@ HTML = r"""
             .then(data => {
                 document.getElementById('_waitCursorStyle').textContent = '';
                 if (data.status === 'ok') {
-                    if (data.prompt) log(data.prompt);
                     log('✓ Image regenerated', 'success');
                     const newSrc = `/api/clip-image?title=${encodeURIComponent(title)}&name=${encodeURIComponent(clipName)}&_=${Date.now()}`;
                     // Update prompts-table cell if present
@@ -1223,7 +1255,6 @@ HTML = r"""
             .then(data => {
                 document.getElementById('_waitCursorStyle').textContent = '';
                 if (data.status === 'ok') {
-                    if (data.prompt) log(data.prompt);
                     log(`✓ ${charName} regenerated`, 'success');
                     const wrap = document.getElementById(`cref-img-wrap-${idx}`);
                     wrap.innerHTML = `<img src="/api/ref-image?title=${encodeURIComponent(title)}&name=${encodeURIComponent(safeName)}&_=${Date.now()}"
@@ -1251,7 +1282,6 @@ HTML = r"""
                 ai_helper: document.getElementById('ai_helper').value,
                 generate_video: document.getElementById('generate_video').checked,
                 image_model: document.getElementById('image_model').value,
-                thumb_image_model: document.getElementById('thumb_image_model').value,
                 transition_style: document.getElementById('transition_style').value,
                 transition_duration: parseFloat(document.getElementById('transition_duration').value) || 1.0,
                 step_narration: document.getElementById('step_narration').checked,
@@ -1281,6 +1311,21 @@ HTML = r"""
         
         // Initial log
         log('Video Generator ready', 'success');
+
+        // Event delegation for browse delete buttons
+        document.getElementById('browseGrid').addEventListener('click', function(e) {
+            const btn = e.target.closest('[data-action="delete"]');
+            if (btn) {
+                e.preventDefault();
+                e.stopPropagation();
+                const title = document.getElementById('projectSelect').value;
+                const name = btn.getAttribute('data-name');
+                const subpath = btn.getAttribute('data-subpath');
+                if (confirm(`Delete "${name}"?`)) {
+                    deleteBrowseEntry(btn, title, name, subpath);
+                }
+            }
+        });
         
         function loadProjects(selectTitle) {
             fetch('/api/projects')
@@ -1403,6 +1448,7 @@ HTML = r"""
                     .then(r => r.json())
                     .then(data => {
                         data.lines.forEach(e => log(e.message, e.type));
+                        loadPromptLog();
                         if (!data.running) {
                             clearInterval(_pollTimer);
                             _pollTimer = null;
@@ -1506,6 +1552,7 @@ def save_config():
 
 
 APP_LOG = os.path.join(os.path.dirname(__file__), "app.log")
+APP_PROMPT_LOG = os.path.join(os.path.dirname(__file__), "prompt.log")
 
 
 @app.route("/api/log", methods=["POST"])
@@ -1521,6 +1568,42 @@ def write_log():
 def clear_log():
     open(APP_LOG, "w").close()
     return jsonify({"status": "ok"})
+
+
+@app.route("/api/log/prompt", methods=["POST"])
+def write_prompt_log():
+    data = request.json
+    line = (
+        f"[{data.get('time', '')}] {data.get('helper', '')}: {data.get('prompt', '')}\n"
+    )
+    with open(APP_PROMPT_LOG, "a") as f:
+        f.write(line)
+    return jsonify({"status": "ok"})
+
+
+@app.route("/api/log/prompt/clear", methods=["POST"])
+def clear_prompt_log():
+    open(APP_PROMPT_LOG, "w").close()
+    return jsonify({"status": "ok"})
+
+
+@app.route("/api/log/prompt/load", methods=["GET"])
+def load_prompt_log():
+    if not os.path.exists(APP_PROMPT_LOG):
+        return jsonify({"lines": []})
+    with open(APP_PROMPT_LOG, "r") as f:
+        lines = f.readlines()
+    result = []
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        m = re.match(r"\[([^\]]*)\]\s*(.*?):\s*(.*)", line)
+        if m:
+            result.append(
+                {"time": m.group(1), "helper": m.group(2), "prompt": m.group(3)}
+            )
+    return jsonify({"lines": result})
 
 
 @app.route("/api/projects", methods=["GET"])
@@ -1660,6 +1743,12 @@ def _ensure_key_service():
 
 def _call_ai(prompt, ai_helper, timeout=120):
     """Send a prompt to the configured AI helper and return the text reply."""
+    from datetime import datetime
+
+    ts = datetime.now().strftime("%H:%M:%S")
+    with open(APP_PROMPT_LOG, "a") as f:
+        f.write(f"[{ts}] {ai_helper}: {prompt}\n")
+
     if ai_helper == "claude":
         _ensure_key_service()
         resp = requests.post(
@@ -3293,6 +3382,12 @@ def _generate_narration(
     project_dir = project_dir or os.path.dirname(narration_path)
     rawprompt_path = os.path.join(project_dir, "RawPrompt.txt")
 
+    from datetime import datetime
+
+    ts = datetime.now().strftime("%H:%M:%S")
+    with open(APP_PROMPT_LOG, "a") as f:
+        f.write(f"[{ts}] {ai_helper}: {prompt}\n")
+
     if ai_helper == "claude":
         _ensure_key_service()
         resp = requests.post(
@@ -3562,9 +3657,7 @@ def _run_pipeline(
         if step_thumbnail:
             with open(narration_path, "r") as f:
                 narration_text = f.read()
-            thumb_image_model = proj_cfg.get("thumb_image_model") or proj_cfg.get(
-                "image_model", "geminiproxy"
-            )
+            thumb_image_model = proj_cfg.get("image_model", "geminiproxy")
             _generate_thumbnail_and_metadata(
                 title,
                 project_dir,
