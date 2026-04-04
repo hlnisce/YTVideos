@@ -363,6 +363,8 @@ def generate_cref_file(
             words = ", ".join(narration_words[char])
             f.write(f"{desc}|{words}\n")
 
+        f.write("Filler,filler|\n")
+
     print(f"Generated: {cref_path}")
     return final_descriptions
 

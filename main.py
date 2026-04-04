@@ -91,7 +91,11 @@ HTML = r"""
         .container { display: flex; height: 100vh; }
         .main-panel { flex: 2; padding: 15px 20px; display: flex; flex-direction: column; overflow: hidden; }
         .log-panel { flex: 1; background: #1e1e1e; color: #0f0; padding: 10px; display: flex; flex-direction: column; font-family: monospace; font-size: 10px; border-left: 3px solid #333; overflow: hidden; }
-        #logContent { flex: 1; overflow-y: auto; }
+        #logContent { flex: 1; overflow-y: auto; overflow-x: hidden; }
+        #logContent::-webkit-scrollbar { width: 8px; }
+        #logContent::-webkit-scrollbar-track { background: #111; }
+        #logContent::-webkit-scrollbar-thumb { background: #555; border-radius: 4px; }
+        #logContent::-webkit-scrollbar-thumb:hover { background: #777; }
         .log-entry { margin-bottom: 3px; padding: 2px 0; border-bottom: 1px solid #333; }
         .log-time { color: #888; }
         .log-info { color: #0f0; }
@@ -297,7 +301,12 @@ HTML = r"""
                         <select id="ai_helper">
                             <option value="opencode">OpenCode</option>
                             <option value="claude">Claude</option>
+                            <option value="copilotproxy">CopilotProxy</option>
+                            <option value="deepseekproxy">DeepSeekProxy</option>
                             <option value="geminiproxy">GeminiProxy</option>
+                            <option value="chatgptproxy">ChatGPTProxy</option>
+                            <option value="perplexityproxy">PerplexityProxy</option>
+                            <option value="xiaomiproxy">XiaomiProxy</option>
                             <option value="google">Google</option>
                         </select>
                     </div>
@@ -478,7 +487,7 @@ HTML = r"""
             </div>
             <div id="logContent"></div>
         </div>
-        <div id="logToggle" style="display:none; position:fixed; right:0; bottom:20px; background:#333; color:#fff; padding:10px 6px; cursor:pointer; border-radius:6px 0 0 6px; font-size:14px; z-index:1000;" onclick="showLogPanel()" title="Show Activity Log">◀</div>
+        <div id="logToggle" style="display:none; position:fixed; right:0; top:50%; transform:translateY(-50%); background:#333; color:#fff; padding:10px 6px; cursor:pointer; border-radius:6px 0 0 6px; font-size:14px; z-index:1000;" onclick="showLogPanel()" title="Show Activity Log">◀</div>
     </div>
     
     <script>
@@ -1640,6 +1649,769 @@ def _call_ai(prompt, ai_helper, timeout=120):
         resp.raise_for_status()
         return resp.json().get("reply", "").strip()
 
+    if ai_helper == "chatgptproxy":
+        import websocket as _ws
+
+        cdp_port = 9222
+        tab_url = "chatgpt.com"
+        selector = '[data-message-author-role="assistant"]'
+
+        resp = requests.get(f"http://localhost:{cdp_port}/json", timeout=3)
+        tabs = [
+            t
+            for t in resp.json()
+            if t.get("type") == "page" and tab_url in t.get("url", "")
+        ]
+        if not tabs:
+            raise RuntimeError(f"ChatGPTProxy: no Chrome tab found for {tab_url}")
+        tab = tabs[0]
+        ws_url = tab["webSocketDebuggerUrl"]
+        requests.get(
+            f"http://localhost:{cdp_port}/json/activate/{tab['id']}", timeout=3
+        )
+        time.sleep(0.5)
+        deadline = time.monotonic() + timeout
+        poll_id = [1]
+        ws = _ws.create_connection(ws_url, timeout=10, suppress_origin=True)
+
+        def cdp_eval(js):
+            if time.monotonic() > deadline:
+                return None
+            pid = poll_id[0]
+            poll_id[0] += 1
+            ws.send(
+                json.dumps(
+                    {
+                        "id": pid,
+                        "method": "Runtime.evaluate",
+                        "params": {"expression": js},
+                    }
+                )
+            )
+            for _ in range(200):
+                if time.monotonic() > deadline:
+                    return None
+                msg = json.loads(ws.recv())
+                if msg.get("id") == pid:
+                    return msg.get("result", {}).get("result", {}).get("value")
+            return None
+
+        cdp_eval("""(function() {
+            var el = document.querySelector('textarea, [contenteditable="true"], [role="textbox"], input[type="text"]');
+            if (el) { el.focus(); el.click(); }
+        })()""")
+        time.sleep(0.3)
+
+        existing_count = cdp_eval(f"""(function() {{
+            return document.querySelectorAll({json.dumps(selector)}).length;
+        }})()""")
+        existing_count = int(existing_count) if existing_count else 0
+
+        # Insert text via Input.insertText
+        ws.send(
+            json.dumps(
+                {
+                    "id": poll_id[0],
+                    "method": "Input.insertText",
+                    "params": {"text": prompt},
+                }
+            )
+        )
+        ws.recv()
+        poll_id[0] += 1
+        time.sleep(0.2)
+
+        # Submit via Enter
+        for ev in ("keyDown", "keyUp"):
+            ws.send(
+                json.dumps(
+                    {
+                        "id": poll_id[0],
+                        "method": "Input.dispatchKeyEvent",
+                        "params": {
+                            "type": ev,
+                            "key": "Enter",
+                            "code": "Enter",
+                            "windowsVirtualKeyCode": 13,
+                            "nativeVirtualKeyCode": 13,
+                        },
+                    }
+                )
+            )
+            ws.recv()
+            poll_id[0] += 1
+        ws.close()
+
+        # Re-fetch tab for polling (ChatGPT may navigate)
+        time.sleep(1)
+        for _ in range(5):
+            resp2 = requests.get(f"http://localhost:{cdp_port}/json", timeout=3)
+            tabs2 = [
+                t
+                for t in resp2.json()
+                if t.get("type") == "page" and tab_url in t.get("url", "")
+            ]
+            if tabs2 and tabs2[0]["webSocketDebuggerUrl"] != ws_url:
+                ws_url = tabs2[0]["webSocketDebuggerUrl"]
+                break
+            time.sleep(0.5)
+
+        # Poll with new WebSocket
+        pw = _ws.create_connection(ws_url, timeout=10, suppress_origin=True)
+        pw_poll_id = [1]
+
+        def pw_eval(js):
+            if time.monotonic() > deadline:
+                return None
+            pid = pw_poll_id[0]
+            pw_poll_id[0] += 1
+            pw.send(
+                json.dumps(
+                    {
+                        "id": pid,
+                        "method": "Runtime.evaluate",
+                        "params": {"expression": js},
+                    }
+                )
+            )
+            for _ in range(100):
+                if time.monotonic() > deadline:
+                    return None
+                msg = json.loads(pw.recv())
+                if msg.get("id") == pid:
+                    return msg.get("result", {}).get("result", {}).get("value")
+            return None
+
+        reply = None
+        prev_text = None
+        time.sleep(1)
+        while time.monotonic() < deadline:
+            text = pw_eval(f"""(function() {{
+                var els = document.querySelectorAll({json.dumps(selector)});
+                if (els.length <= {existing_count}) return null;
+                var last = els[els.length - 1];
+                return last.innerText.trim() || null;
+            }})()""")
+            if text and text == prev_text:
+                reply = text
+                break
+            prev_text = text
+            time.sleep(1)
+        pw.close()
+        if not reply and prev_text:
+            reply = prev_text
+        if not reply:
+            raise RuntimeError("ChatGPTProxy: timed out waiting for response")
+        return reply.strip()
+
+    if ai_helper == "copilotproxy":
+        import websocket as _ws
+
+        cdp_port = 9222
+        tab_url = "copilot.microsoft.com"
+
+        resp = requests.get(f"http://localhost:{cdp_port}/json", timeout=3)
+        tabs = [
+            t
+            for t in resp.json()
+            if t.get("type") == "page" and tab_url in t.get("url", "")
+        ]
+        if not tabs:
+            raise RuntimeError(f"CopilotProxy: no Chrome tab found for {tab_url}")
+        tab = tabs[0]
+        ws_url = tab["webSocketDebuggerUrl"]
+        requests.get(
+            f"http://localhost:{cdp_port}/json/activate/{tab['id']}", timeout=3
+        )
+        time.sleep(0.5)
+        deadline = time.monotonic() + timeout
+        poll_id = [1]
+        ws = _ws.create_connection(ws_url, timeout=10, suppress_origin=True)
+
+        def cdp_eval(js):
+            if time.monotonic() > deadline:
+                return None
+            pid = poll_id[0]
+            poll_id[0] += 1
+            ws.send(
+                json.dumps(
+                    {
+                        "id": pid,
+                        "method": "Runtime.evaluate",
+                        "params": {"expression": js},
+                    }
+                )
+            )
+            for _ in range(200):
+                if time.monotonic() > deadline:
+                    return None
+                msg = json.loads(ws.recv())
+                if msg.get("id") == pid:
+                    return msg.get("result", {}).get("result", {}).get("value")
+            return None
+
+        existing_count = cdp_eval("""(function() {
+            return document.querySelectorAll('[data-testid="ai-message"]').length;
+        })()""")
+        existing_count = int(existing_count) if existing_count else 0
+
+        cdp_eval("""(function() {
+            var el = document.querySelector('textarea, [contenteditable="true"], [role="textbox"]');
+            if (!el) return;
+            el.focus(); el.click();
+            document.execCommand('selectAll', false, null);
+            document.execCommand('delete', false, null);
+        })()""")
+        time.sleep(0.2)
+
+        ws.send(
+            json.dumps(
+                {
+                    "id": poll_id[0],
+                    "method": "Input.insertText",
+                    "params": {"text": prompt},
+                }
+            )
+        )
+        ws.recv()
+        poll_id[0] += 1
+        time.sleep(0.3)
+
+        sent = cdp_eval("""(function() {
+            var btn = document.querySelector('button[aria-label*="Send"], button[aria-label*="Submit"], button[type="submit"]');
+            if (btn && !btn.disabled) { btn.click(); return 'btn'; }
+            return 'enter';
+        })()""")
+        if sent == "enter":
+            for ev in ("keyDown", "keyUp"):
+                ws.send(
+                    json.dumps(
+                        {
+                            "id": poll_id[0],
+                            "method": "Input.dispatchKeyEvent",
+                            "params": {
+                                "type": ev,
+                                "key": "Enter",
+                                "code": "Enter",
+                                "windowsVirtualKeyCode": 13,
+                                "nativeVirtualKeyCode": 13,
+                            },
+                        }
+                    )
+                )
+                ws.recv()
+                poll_id[0] += 1
+
+        ws.close()
+        time.sleep(1)
+
+        pw = _ws.create_connection(ws_url, timeout=10, suppress_origin=True)
+        pw_poll_id = [1]
+
+        def pw_eval(js):
+            if time.monotonic() > deadline:
+                return None
+            pid = pw_poll_id[0]
+            pw_poll_id[0] += 1
+            pw.send(
+                json.dumps(
+                    {
+                        "id": pid,
+                        "method": "Runtime.evaluate",
+                        "params": {"expression": js},
+                    }
+                )
+            )
+            for _ in range(100):
+                if time.monotonic() > deadline:
+                    return None
+                msg = json.loads(pw.recv())
+                if msg.get("id") == pid:
+                    return msg.get("result", {}).get("result", {}).get("value")
+            return None
+
+        reply = None
+        prev_text = None
+        time.sleep(1)
+        while time.monotonic() < deadline:
+            text = pw_eval(f"""(function() {{
+                var els = document.querySelectorAll('[data-testid="ai-message"]');
+                if (els.length <= {existing_count}) return null;
+                var last = els[els.length - 1];
+                return last.innerText.trim() || null;
+            }})()""")
+            if text and text == prev_text:
+                reply = text
+                break
+            prev_text = text
+            time.sleep(1)
+        pw.close()
+        if not reply and prev_text:
+            reply = prev_text
+        if not reply:
+            raise RuntimeError("CopilotProxy: timed out waiting for response")
+        import re as _re
+
+        reply = _re.sub(r"^Copilot said\s*", "", reply).strip()
+        return reply.strip()
+
+    if ai_helper == "deepseekproxy":
+        import websocket as _ws
+
+        cdp_port = 9222
+        tab_url = "chat.deepseek.com"
+
+        resp = requests.get(f"http://localhost:{cdp_port}/json", timeout=3)
+        tabs = [
+            t
+            for t in resp.json()
+            if t.get("type") == "page" and tab_url in t.get("url", "")
+        ]
+        if not tabs:
+            raise RuntimeError(f"DeepSeekProxy: no Chrome tab found for {tab_url}")
+        tab = tabs[0]
+        ws_url = tab["webSocketDebuggerUrl"]
+        requests.get(
+            f"http://localhost:{cdp_port}/json/activate/{tab['id']}", timeout=3
+        )
+        time.sleep(0.5)
+        deadline = time.monotonic() + timeout
+        poll_id = [1]
+        ws = _ws.create_connection(ws_url, timeout=10, suppress_origin=True)
+
+        def cdp_eval(js):
+            if time.monotonic() > deadline:
+                return None
+            pid = poll_id[0]
+            poll_id[0] += 1
+            ws.send(
+                json.dumps(
+                    {
+                        "id": pid,
+                        "method": "Runtime.evaluate",
+                        "params": {"expression": js},
+                    }
+                )
+            )
+            for _ in range(200):
+                if time.monotonic() > deadline:
+                    return None
+                msg = json.loads(ws.recv())
+                if msg.get("id") == pid:
+                    return msg.get("result", {}).get("result", {}).get("value")
+            return None
+
+        existing_count = cdp_eval("""(function() {
+            var els = document.querySelectorAll('.ds-markdown, .message-assistant, [class*="assistant"], [class*="response"], .chat-message-assistant');
+            return els.length;
+        })()""")
+        existing_count = int(existing_count) if existing_count else 0
+
+        cdp_eval("""(function() {
+            var el = document.querySelector('textarea, [contenteditable="true"], [role="textbox"]');
+            if (!el) return;
+            el.focus(); el.click();
+            document.execCommand('selectAll', false, null);
+            document.execCommand('delete', false, null);
+        })()""")
+        time.sleep(0.2)
+
+        ws.send(
+            json.dumps(
+                {
+                    "id": poll_id[0],
+                    "method": "Input.insertText",
+                    "params": {"text": prompt},
+                }
+            )
+        )
+        ws.recv()
+        poll_id[0] += 1
+        time.sleep(0.3)
+
+        sent = cdp_eval("""(function() {
+            var btn = document.querySelector('button[aria-label*="Send"], button[aria-label*="Submit"], button[type="submit"], #send-button, [class*="send"]');
+            if (btn && !btn.disabled) { btn.click(); return 'btn'; }
+            return 'enter';
+        })()""")
+        if sent == "enter":
+            for ev in ("keyDown", "keyUp"):
+                ws.send(
+                    json.dumps(
+                        {
+                            "id": poll_id[0],
+                            "method": "Input.dispatchKeyEvent",
+                            "params": {
+                                "type": ev,
+                                "key": "Enter",
+                                "code": "Enter",
+                                "windowsVirtualKeyCode": 13,
+                                "nativeVirtualKeyCode": 13,
+                            },
+                        }
+                    )
+                )
+                ws.recv()
+                poll_id[0] += 1
+
+        ws.close()
+        time.sleep(1)
+
+        pw = _ws.create_connection(ws_url, timeout=10, suppress_origin=True)
+        pw_poll_id = [1]
+
+        def pw_eval(js):
+            if time.monotonic() > deadline:
+                return None
+            pid = pw_poll_id[0]
+            pw_poll_id[0] += 1
+            pw.send(
+                json.dumps(
+                    {
+                        "id": pid,
+                        "method": "Runtime.evaluate",
+                        "params": {"expression": js},
+                    }
+                )
+            )
+            for _ in range(100):
+                if time.monotonic() > deadline:
+                    return None
+                msg = json.loads(pw.recv())
+                if msg.get("id") == pid:
+                    return msg.get("result", {}).get("result", {}).get("value")
+            return None
+
+        reply = None
+        prev_text = None
+        time.sleep(1)
+        while time.monotonic() < deadline:
+            text = pw_eval(f"""(function() {{
+                var els = document.querySelectorAll('.ds-markdown, .message-assistant, [class*="assistant"], [class*="response"], .chat-message-assistant');
+                if (els.length <= {existing_count}) return null;
+                var last = els[els.length - 1];
+                return last.innerText.trim() || null;
+            }})()""")
+            if text and text == prev_text:
+                reply = text
+                break
+            prev_text = text
+            time.sleep(1)
+        pw.close()
+        if not reply and prev_text:
+            reply = prev_text
+        if not reply:
+            raise RuntimeError("DeepSeekProxy: timed out waiting for response")
+        return reply.strip()
+
+    if ai_helper == "perplexityproxy":
+        import websocket as _ws
+
+        cdp_port = 9222
+        tab_url = "perplexity.ai"
+        selector = ".prose"
+
+        resp = requests.get(f"http://localhost:{cdp_port}/json", timeout=3)
+        tabs = [
+            t
+            for t in resp.json()
+            if t.get("type") == "page" and tab_url in t.get("url", "")
+        ]
+        if not tabs:
+            raise RuntimeError(f"PerplexityProxy: no Chrome tab found for {tab_url}")
+        tab = tabs[0]
+        ws_url = tab["webSocketDebuggerUrl"]
+        requests.get(
+            f"http://localhost:{cdp_port}/json/activate/{tab['id']}", timeout=3
+        )
+        time.sleep(0.5)
+        deadline = time.monotonic() + timeout
+        poll_id = [1]
+        ws = _ws.create_connection(ws_url, timeout=10, suppress_origin=True)
+
+        def cdp_eval(js):
+            if time.monotonic() > deadline:
+                return None
+            pid = poll_id[0]
+            poll_id[0] += 1
+            ws.send(
+                json.dumps(
+                    {
+                        "id": pid,
+                        "method": "Runtime.evaluate",
+                        "params": {"expression": js},
+                    }
+                )
+            )
+            for _ in range(200):
+                if time.monotonic() > deadline:
+                    return None
+                msg = json.loads(ws.recv())
+                if msg.get("id") == pid:
+                    return msg.get("result", {}).get("result", {}).get("value")
+            return None
+
+        cdp_eval("""(function() {
+            var el = document.querySelector('textarea, [contenteditable="true"], [role="textbox"], input[type="text"]');
+            if (el) { el.focus(); el.click(); }
+        })()""")
+        time.sleep(0.3)
+
+        existing_count = cdp_eval(f"""(function() {{
+            return document.querySelectorAll({json.dumps(selector)}).length;
+        }})()""")
+        existing_count = int(existing_count) if existing_count else 0
+
+        ws.send(
+            json.dumps(
+                {
+                    "id": poll_id[0],
+                    "method": "Input.insertText",
+                    "params": {"text": prompt},
+                }
+            )
+        )
+        ws.recv()
+        poll_id[0] += 1
+        time.sleep(0.2)
+
+        for ev in ("keyDown", "keyUp"):
+            ws.send(
+                json.dumps(
+                    {
+                        "id": poll_id[0],
+                        "method": "Input.dispatchKeyEvent",
+                        "params": {
+                            "type": ev,
+                            "key": "Enter",
+                            "code": "Enter",
+                            "windowsVirtualKeyCode": 13,
+                            "nativeVirtualKeyCode": 13,
+                        },
+                    }
+                )
+            )
+            ws.recv()
+            poll_id[0] += 1
+        ws.close()
+
+        time.sleep(1)
+        for _ in range(5):
+            resp2 = requests.get(f"http://localhost:{cdp_port}/json", timeout=3)
+            tabs2 = [
+                t
+                for t in resp2.json()
+                if t.get("type") == "page" and tab_url in t.get("url", "")
+            ]
+            if tabs2 and tabs2[0]["webSocketDebuggerUrl"] != ws_url:
+                ws_url = tabs2[0]["webSocketDebuggerUrl"]
+                break
+            time.sleep(0.5)
+
+        pw = _ws.create_connection(ws_url, timeout=10, suppress_origin=True)
+        pw_poll_id = [1]
+
+        def pw_eval(js):
+            if time.monotonic() > deadline:
+                return None
+            pid = pw_poll_id[0]
+            pw_poll_id[0] += 1
+            pw.send(
+                json.dumps(
+                    {
+                        "id": pid,
+                        "method": "Runtime.evaluate",
+                        "params": {"expression": js},
+                    }
+                )
+            )
+            for _ in range(100):
+                if time.monotonic() > deadline:
+                    return None
+                msg = json.loads(pw.recv())
+                if msg.get("id") == pid:
+                    return msg.get("result", {}).get("result", {}).get("value")
+            return None
+
+        reply = None
+        prev_text = None
+        time.sleep(1)
+        while time.monotonic() < deadline:
+            text = pw_eval(f"""(function() {{
+                var els = document.querySelectorAll({json.dumps(selector)});
+                if (els.length <= {existing_count}) return null;
+                var last = els[els.length - 1];
+                return last.innerText.trim() || null;
+            }})()""")
+            if text and text == prev_text:
+                reply = text
+                break
+            prev_text = text
+            time.sleep(1)
+        pw.close()
+        if not reply and prev_text:
+            reply = prev_text
+        if not reply:
+            raise RuntimeError("PerplexityProxy: timed out waiting for response")
+        return reply.strip()
+
+    if ai_helper == "xiaomiproxy":
+        import websocket as _ws
+
+        cdp_port = 9222
+        tab_url = "aistudio.xiaomimimo.com"
+
+        resp = requests.get(f"http://localhost:{cdp_port}/json", timeout=3)
+        tabs = [
+            t
+            for t in resp.json()
+            if t.get("type") == "page" and tab_url in t.get("url", "")
+        ]
+        if not tabs:
+            raise RuntimeError(f"XiaomiProxy: no Chrome tab found for {tab_url}")
+        tab = tabs[0]
+        ws_url = tab["webSocketDebuggerUrl"]
+        requests.get(
+            f"http://localhost:{cdp_port}/json/activate/{tab['id']}", timeout=3
+        )
+        time.sleep(0.5)
+        deadline = time.monotonic() + timeout
+        poll_id = [1]
+        ws = _ws.create_connection(ws_url, timeout=10, suppress_origin=True)
+
+        def cdp_eval(js):
+            if time.monotonic() > deadline:
+                return None
+            pid = poll_id[0]
+            poll_id[0] += 1
+            ws.send(
+                json.dumps(
+                    {
+                        "id": pid,
+                        "method": "Runtime.evaluate",
+                        "params": {"expression": js},
+                    }
+                )
+            )
+            for _ in range(200):
+                if time.monotonic() > deadline:
+                    return None
+                msg = json.loads(ws.recv())
+                if msg.get("id") == pid:
+                    return msg.get("result", {}).get("result", {}).get("value")
+            return None
+
+        cdp_eval("""(function() {
+            var el = document.querySelector('textarea, [contenteditable="true"], [role="textbox"], input[type="text"]');
+            if (el) { el.focus(); el.click(); }
+        })()""")
+        time.sleep(0.3)
+
+        pre_len = cdp_eval("""(function() {
+            return document.body ? document.body.innerText.length : 0;
+        })()""")
+        pre_len = int(pre_len) if pre_len else 0
+
+        ws.send(
+            json.dumps(
+                {
+                    "id": poll_id[0],
+                    "method": "Input.insertText",
+                    "params": {"text": prompt},
+                }
+            )
+        )
+        ws.recv()
+        poll_id[0] += 1
+        time.sleep(0.2)
+
+        for ev in ("keyDown", "keyUp"):
+            ws.send(
+                json.dumps(
+                    {
+                        "id": poll_id[0],
+                        "method": "Input.dispatchKeyEvent",
+                        "params": {
+                            "type": ev,
+                            "key": "Enter",
+                            "code": "Enter",
+                            "windowsVirtualKeyCode": 13,
+                            "nativeVirtualKeyCode": 13,
+                        },
+                    }
+                )
+            )
+            ws.recv()
+            poll_id[0] += 1
+        ws.close()
+
+        time.sleep(3)
+        for _ in range(10):
+            resp2 = requests.get(f"http://localhost:{cdp_port}/json", timeout=3)
+            tabs2 = [
+                t
+                for t in resp2.json()
+                if t.get("type") == "page" and tab_url in t.get("url", "")
+            ]
+            if tabs2 and tabs2[0]["webSocketDebuggerUrl"] != ws_url:
+                ws_url = tabs2[0]["webSocketDebuggerUrl"]
+                break
+            time.sleep(1)
+
+        pw = _ws.create_connection(ws_url, timeout=10, suppress_origin=True)
+        pw_poll_id = [1]
+
+        def pw_eval(js):
+            if time.monotonic() > deadline:
+                return None
+            pid = pw_poll_id[0]
+            pw_poll_id[0] += 1
+            pw.send(
+                json.dumps(
+                    {
+                        "id": pid,
+                        "method": "Runtime.evaluate",
+                        "params": {"expression": js},
+                    }
+                )
+            )
+            for _ in range(100):
+                if time.monotonic() > deadline:
+                    return None
+                msg = json.loads(pw.recv())
+                if msg.get("id") == pid:
+                    return msg.get("result", {}).get("result", {}).get("value")
+            return None
+
+        reply = None
+        prev_len = 0
+        time.sleep(3)
+        while time.monotonic() < deadline:
+            val = pw_eval("""(function() {
+                return document.body ? document.body.innerText : '';
+            })()""")
+            if val and len(val) > prev_len:
+                prev_len = len(val)
+                reply = val
+            elif val and len(val) == prev_len and prev_len > 0:
+                break
+            time.sleep(2)
+        pw.close()
+        if not reply:
+            raise RuntimeError("XiaomiProxy: timed out waiting for response")
+        import re as _re
+
+        matches = list(
+            _re.finditer(
+                r"Thought for [\d.]+ seconds?\s*(.+?)(?=\s*(?:MiMo-V2-Pro|Developer demo|Citation sources|$))",
+                reply,
+                _re.DOTALL,
+            )
+        )
+        if matches:
+            return matches[-1].group(1).strip()
+        return reply.strip()
+
     if ai_helper == "geminiproxy":
         cdp_port = 9222
         tab_url = "gemini.google.com"
@@ -1691,10 +2463,10 @@ def _call_ai(prompt, ai_helper, timeout=120):
             if (el) { el.focus(); el.click(); }
         })()""")
         time.sleep(0.3)
-        pre_last = cdp_eval(f"""(function() {{
-            var els = document.querySelectorAll({json.dumps(selector)});
-            return els.length ? els[els.length - 1].innerText : null;
+        existing_count = cdp_eval(f"""(function() {{
+            return document.querySelectorAll({json.dumps(selector)}).length;
         }})()""")
+        existing_count = int(existing_count) if existing_count else 0
         mid = poll_id[0]
         poll_id[0] += 1
         ws.send(
@@ -1724,22 +2496,22 @@ def _call_ai(prompt, ai_helper, timeout=120):
             )
             ws.recv()
         reply = None
-        prev_reply = None
-        time.sleep(3)
+        prev_text = None
+        time.sleep(1)
         while time.monotonic() < deadline:
             val = cdp_eval(f"""(function() {{
                 var els = document.querySelectorAll({json.dumps(selector)});
-                if (!els.length) return null;
-                return els[els.length - 1].innerText || null;
+                if (els.length <= {existing_count}) return null;
+                return els[els.length - 1].innerText.trim() || null;
             }})()""")
-            if val and val == pre_last:
-                val = None
-            if val and val == prev_reply:
+            if val and val == prev_text:
                 reply = val
                 break
-            prev_reply = val
-            time.sleep(2)
+            prev_text = val
+            time.sleep(1)
         ws.close()
+        if not reply and prev_text:
+            reply = prev_text
         if not reply:
             raise RuntimeError("GeminiProxy: timed out waiting for response")
         return reply.strip()
