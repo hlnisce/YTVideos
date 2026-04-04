@@ -1255,7 +1255,6 @@ HTML = r"""
                 document.getElementById('_waitCursorStyle').textContent = '';
                 if (data.status === 'ok') {
                     log(`✓ ${charName} regenerated`, 'success');
-                    loadPromptLog();
                     const wrap = document.getElementById(`cref-img-wrap-${idx}`);
                     wrap.innerHTML = `<img src="/api/ref-image?title=${encodeURIComponent(title)}&name=${encodeURIComponent(safeName)}&_=${Date.now()}"
                         alt="${charName}" onclick="regenerateCrefImage(${idx}, '${safeName}', '${charName}')"
@@ -3349,7 +3348,7 @@ def _build_narration_prompt(title, story_type, sentence_count=30):
         f"IMPORTANT: The very last sentence of the narration must always be a SINGLE CTA asking viewers "
         f"to like, share and subscribe. Limit this to exactly one sentence.\n\n"
         f"Then after the narration, write a section called [Prompts] and for EACH sentence above, "
-        f"write a detailed image generation prompt. Each prompt should describe the scene vividly: "
+        f"list detailed image generation prompt. Each prompt should describe the scene vividly: "
         f"setting, background, lighting, camera angle (close-up, wide shot, etc.), character positions, "
         f"mood, and colors. "
         f"One prompt per line, no numbering.\n\n"
@@ -4059,12 +4058,6 @@ def regenerate_cref():
 
     style_desc = STYLE_DESCRIPTIONS.get(image_style, STYLE_DESCRIPTIONS["Stick Figure"])
     prompt = f"{style_desc}, {description}"
-    from datetime import datetime
-
-    ts = datetime.now().strftime("%H:%M:%S")
-    safe_prompt = prompt.replace("\n", " ").replace("\r", " ")
-    with open(APP_PROMPT_LOG, "a") as f:
-        f.write(f"[{ts}] {image_model}: {safe_prompt}\n")
     output_path = os.path.join(project_dir, f"ref_{safe_name}.png")
     comfy_input = "/home/henry/comfy/ComfyUI/input"
 
