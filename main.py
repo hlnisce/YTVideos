@@ -161,6 +161,7 @@ HTML = r"""
                     <option value="">-- Select Project --</option>
                 </select>
                 <button class="btn" onclick="resetPipelineFlag()" style="background: #6c757d; font-size:12px; padding: 5px 10px;" title="Reset pipeline running flag">🔄</button>
+                <button class="btn" onclick="checkComfyQueue()" style="background: #6c757d; font-size:12px; padding: 5px 10px;" title="Check ComfyUI Queue">Confy</button>
             </h1>
             <div class="tab-bar">
                 <div class="tab active" id="tab-config" onclick="switchTab('config')">⚙️ Config</div>
@@ -520,6 +521,24 @@ HTML = r"""
             document.getElementById('logContent').innerHTML = '';
             fetch('/api/log/clear', {method: 'POST'});
         }
+
+        function checkComfyQueue() {
+            log('Checking ComfyUI queue...');
+            fetch('/api/comfy/queue')
+                .then(r => r.json())
+                .then(data => {
+                    if (data.error) {
+                        log('ComfyUI error: ' + data.error, 'error');
+                    } else {
+                        const pending = (data.queue_pending || []).length;
+                        const running = (data.queue_running || []).length;
+                        log(`Comfy : Pending ${pending}, Running - ${running}`, 'info');
+                    }
+                })
+                .catch(err => {
+                    log('Failed to reach ComfyUI: ' + err, 'error');
+                });
+        }
         
         const TABS = ['config', 'narration', 'cref', 'prompts', 'clips', 'thumbnail', 'browse', 'play'];
 
@@ -612,7 +631,9 @@ HTML = r"""
                         delBtn.onclick = () => deleteBrowseEntry(delBtn, title, f.name, subpath);
                         row.appendChild(nameSpan);
                         row.appendChild(labelSpan);
+                        if (f.size) {
                         row.appendChild(sizeSpan);
+                        }
                         row.appendChild(delBtn);
                         if (f.is_dir) {
                             row.style.cursor = 'pointer';
@@ -3689,6 +3710,16 @@ def reset_pipeline_flag():
     _pipeline.running = False
     _pipeline.logs.clear()
     return jsonify({"status": "ok"})
+
+
+@app.route("/api/comfy/queue", methods=["GET"])
+def get_comfy_queue():
+    try:
+        # Check if ComfyUI is reachable
+        resp = requests.get("http://127.0.0.1:8188/queue", timeout=2)
+        return jsonify(resp.json())
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route("/api/prompts", methods=["GET"])

@@ -397,35 +397,28 @@ def rewrite_prompts_with_character_names(
             + "\n\n"
         )
     prompt = (
-        f"You are rewriting image generation prompts for a story.\n\n"
-        f"Characters in this story:\n{char_list}\n\n"
-        f"{narration_context}"
-        f"Rewrite each prompt below, replacing any generic subject words (she, he, the girl, the boy, etc.) with the matching character's exact name from the list above. "
-        f"Use the narration context above to resolve pronouns like 'she' or 'he' to the correct name. "
+
+        f"Act as a Prompt Engineer. I have a list of base prompts and a list of specific CREF characters. Your task is to rewrite the base prompts for EACH character in the list."
+        f"Rules:"
+        f"Replace the generic subject in the base prompt(e.g., 'a woman','he','she', etc.) with the Character Name and Character description."
+        f"Incorporate the character's visual traits (hair, clothing, eyes) into the prompt naturally."
+        f"DO NOT change the camera angle, lighting, background, or mood of the original prompt."
+        f"Base Prompt: {source_lines}"
+        f"Character List: {char_list}\n\n"
         f"Keep everything else exactly the same — do not add, remove, or rephrase anything else.\n\n"
         f"Output ONLY the rewritten prompts, one per line, numbered the same way.\n\n"
-        f"{numbered}"
+
     )
     try:
         print(
             f"  Rewriting {len(source_lines)} prompts with character names via {ai_helper}..."
         )
         reply = _call_ai(prompt, ai_helper, timeout=120)
+        print(f"  AI Reply:\n{reply}")
         if not reply:
             return source_lines
-        rewritten = {}
-        for line in reply.split("\n"):
-            line = line.strip()
-            if not line:
-                continue
-            m = re.match(r"^(\d+)\.\s*(.*)", line)
-            if m:
-                idx = int(m.group(1)) - 1
-                if 0 <= idx < len(source_lines):
-                    rewritten[idx] = m.group(2).strip()
-        result = [rewritten.get(i, source_lines[i]) for i in range(len(source_lines))]
         print(f"  Character name substitution done.")
-        return result
+        return [l.strip() for l in reply.split("\n") if l.strip()]
     except Exception as e:
         print(f"  AI subject rewrite failed ({e}) — using original lines")
         return source_lines
@@ -512,17 +505,7 @@ def generate_prompts_file(
             if not line:
                 continue
             line = re.sub(r"^\d+\.\s*", "", line)
-            scene_crefs = get_scene_cref(
-                line, character_descriptions, "", cref_narration_words
-            )
-            if not scene_crefs:
-                scene_crefs = [main_char_desc] if main_char_desc else []
-            scene_cref = ", ".join(scene_crefs)
-            prompt = (
-                f"{style_desc}, {scene_cref}, {line}"
-                if scene_cref
-                else f"{style_desc}, {line}"
-            )
+            prompt = f"{style_desc}, {line}"
 
             narration_sentence = (
                 narration_lines[i - 1].strip() if i - 1 < len(narration_lines) else line
