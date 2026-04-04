@@ -3566,6 +3566,20 @@ def _generate_narration(
         _parse_narration_response(full_content, narration_path, rawprompt_path)
         return prompt
 
+    # Proxy helpers delegate to _call_ai (CDP-based)
+    if ai_helper in (
+        "chatgptproxy",
+        "copilotproxy",
+        "deepseekproxy",
+        "perplexityproxy",
+        "xiaomiproxy",
+    ):
+        full_content = _call_ai(prompt, ai_helper, timeout=180)
+        if not full_content:
+            raise RuntimeError(f"{ai_helper} returned empty reply")
+        _parse_narration_response(full_content, narration_path, rawprompt_path)
+        return prompt
+
     # Default: opencode
     pre_mtime = (
         os.path.getmtime(narration_path) if os.path.exists(narration_path) else None
