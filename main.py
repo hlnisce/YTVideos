@@ -3385,26 +3385,39 @@ def _generate_thumbnail_and_metadata(
     if os.path.exists(thumb_path):
         p.push("thumbnail.png already exists — skipping", "info")
         return
-    p.push("Generating thumbnail image prompt...")
-    style_desc = STYLE_DESCRIPTIONS.get(image_style, "")
-    style_clause = (
-        f" The image must be in {image_style} style: {style_desc}" if style_desc else ""
-    )
-    thumb_prompt_text = (
-        f"Create a short, vivid image generation prompt for a YouTube thumbnail for a story titled '{title}'. "
-        f"Describe only the visual scene — characters, colors, lighting, composition, and mood. "
-        f"Make it high-contrast and visually striking. Do not include any text or words in the image.{style_clause} "
-        f"Output ONLY the image prompt."
-    )
-    try:
-        image_prompt = _call_ai(thumb_prompt_text, ai_helper, timeout=60)
-        if not image_prompt:
-            image_prompt = f"A colorful, vibrant scene from the children's story '{title}', high contrast, storybook illustration"
-    except Exception as e:
-        p.push(f"⚠ Thumbnail prompt generation failed: {e}", "info")
-        image_prompt = f"A colorful, vibrant scene from the children's story '{title}', high contrast, storybook illustration"
+    thumb_prompt_path = os.path.join(project_dir, "thumbnail_prompt.txt")
+    if os.path.exists(thumb_prompt_path):
+        with open(thumb_prompt_path) as f:
+            image_prompt = f.read().strip()
+        from datetime import datetime
 
-    p.push(f"Thumbnail prompt: {image_prompt}")
+        ts = datetime.now().strftime("%H:%M:%S")
+        safe_prompt = image_prompt.replace("\n", " ").replace("\r", " ")
+        with open(APP_PROMPT_LOG, "a") as f:
+            f.write(f"[{ts}] thumbnail: {safe_prompt}\n")
+    else:
+        p.push("Generating thumbnail image prompt...")
+        style_desc = STYLE_DESCRIPTIONS.get(image_style, "")
+        style_clause = (
+            f" The image must be in {image_style} style: {style_desc}"
+            if style_desc
+            else ""
+        )
+        thumb_prompt_text = (
+            f"Create a short, vivid image generation prompt for a YouTube thumbnail for a story titled '{title}'. "
+            f"Describe only the visual scene — characters, colors, lighting, composition, and mood. "
+            f"Make it high-contrast and visually striking. Do not include any text or words in the image.{style_clause} "
+            f"Output ONLY the image prompt."
+        )
+        try:
+            image_prompt = _call_ai(thumb_prompt_text, ai_helper, timeout=60)
+            if not image_prompt:
+                image_prompt = f"A colorful, vibrant scene from the children's story '{title}', high contrast, storybook illustration"
+        except Exception as e:
+            p.push(f"⚠ Thumbnail prompt generation failed: {e}", "info")
+            image_prompt = f"A colorful, vibrant scene from the children's story '{title}', high contrast, storybook illustration"
+        with open(thumb_prompt_path, "w") as f:
+            f.write(image_prompt + "\n")
 
     # Step 3: generate thumbnail image
     p.push(f"Generating thumbnail via {image_model}...")
