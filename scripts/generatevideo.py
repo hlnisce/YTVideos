@@ -9,6 +9,22 @@ Usage:
   python generatevideo.py --clips 5          # Generate first 5 clips
 """
 
+import urllib.parse
+import re
+
+def refocus_web_app(cdp_port=9222):
+    """Attempt to bring the user's web app tab back into focus."""
+    import requests
+    try:
+        resp = requests.get(f"http://localhost:{cdp_port}/json", timeout=1)
+        for tab in resp.json():
+            url = tab.get("url", "")
+            if tab.get("type") == "page" and "7070" in url:
+                requests.get(f"http://localhost:{cdp_port}/json/activate/{tab['id']}", timeout=1)
+                break
+    except Exception:
+        pass
+
 import os
 import sys
 import re
@@ -21,6 +37,16 @@ import base64
 import argparse
 from PIL import Image
 import numpy as np
+
+try:
+    from prompts import STYLE_DESCRIPTIONS
+except ImportError:
+    # Fallback to avoid import issues if run from a different CWD
+    import importlib.util
+    _spec = importlib.util.spec_from_file_location("prompts", os.path.join(os.path.dirname(__file__), "prompts.py"))
+    _mod = importlib.util.module_from_spec(_spec)
+    _spec.loader.exec_module(_mod)
+    STYLE_DESCRIPTIONS = _mod.STYLE_DESCRIPTIONS
 
 COMFYUI_URL = "http://127.0.0.1:8188"
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -41,16 +67,25 @@ def read_prompts_file(prompts_path):
     prompts = []
 
     with open(prompts_path, "r") as f:
-        content = f.read()
+        lines = f.readlines()
 
-    # Parse prompts like "Prompt 1: ..."
-    pattern = r"Prompt (\d+):\s*(.*?)(?=\n\nPrompt \d+:|$)"
-    matches = re.findall(pattern, content, re.DOTALL)
-
-    for num, prompt in matches:
-        prompt = prompt.strip()
-        if prompt:
-            prompts.append((int(num), prompt))
+    num = 1
+    for line in lines:
+        line = line.strip()
+        if not line or "=" in line or "Video Generation" in line:
+            continue
+        
+        # Extract just the prompt part before ||| if it exists
+        prompt_text = line
+        if "|||" in prompt_text:
+            prompt_text = prompt_text.split("|||", 1)[0]
+            
+        # Clean up any leftover numbering or "Prompt X:" prefixes for backwards compatibility
+        prompt_text = re.sub(r"^(?:Prompt\s*\d+[\.\:]\s*)?(?:\d+[\.\)]\s*)?", "", prompt_text).strip()
+        
+        if prompt_text:
+            prompts.append((num, prompt_text))
+            num += 1
 
     return prompts
 
@@ -573,6 +608,12 @@ def generate_image_clip_geminiproxy(prompt_text, clip_number, output_dir):
     except Exception as e:
         print(f"  GeminiProxy error for clip {clip_number}: {e}")
         return None
+    finally:
+        try:
+            ws.close()
+        except:
+            pass
+        refocus_web_app(cdp_port)
 
 
 def generate_image_clip(prompt_text, clip_number, output_dir):
@@ -664,6 +705,12 @@ def main():
     prompts = read_prompts_file(prompts_path)
     print(f"Found {len(prompts)} prompts")
 
+    # Load style description
+    image_style = config.get("image_style", "Stick Figure")
+    style_desc = STYLE_DESCRIPTIONS.get(image_style, "")
+    if style_desc:
+        print(f"Applying style: {image_style}", flush=True)
+
     # Get reference images — project dir only, synced into ComfyUI input
     ref_images = get_reference_images(project_dir, input_dir)
 
@@ -705,16 +752,19 @@ def main():
         if matched_refs:
             print(f"  Using ref(s): {', '.join(matched_refs)}")
 
+        # Prepend style right before generation
+        full_prompt_text = f"{style_desc}, {prompt_text}" if style_desc else prompt_text
+
         if generate_video:
             clip_path = generate_video_clip(
-                prompt_text, clip_num, matched_refs, clips_dir
+                full_prompt_text, clip_num, matched_refs, clips_dir
             )
         elif IMAGE_MODEL == "geminiproxy":
             clip_path = generate_image_clip_geminiproxy(
-                prompt_text, clip_num, clips_dir
+                full_prompt_text, clip_num, clips_dir
             )
         else:
-            clip_path = generate_image_clip(prompt_text, clip_num, clips_dir)
+            clip_path = generate_image_clip(full_prompt_text, clip_num, clips_dir)
         results.append((clip_num, clip_path is not None))
 
         # Brief pause between generations

@@ -4,6 +4,9 @@ main.py - Web interface for video generation pipeline
 Runs on port 7070 with Config editor
 """
 
+import requests
+import string
+import csv
 import os
 import re
 import json
@@ -13,7 +16,19 @@ import threading
 import time
 from collections import deque
 from flask import Flask, render_template_string, jsonify, request, send_file
-import requests
+
+def refocus_web_app(cdp_port=9222):
+    """Attempt to bring the user's web app tab back into focus."""
+    import requests
+    try:
+        resp = requests.get(f"http://localhost:{cdp_port}/json", timeout=1)
+        for tab in resp.json():
+            url = tab.get("url", "")
+            if tab.get("type") == "page" and "7070" in url:
+                requests.get(f"http://localhost:{cdp_port}/json/activate/{tab['id']}", timeout=1)
+                break
+    except Exception:
+        pass
 
 app = Flask(__name__)
 
@@ -1072,6 +1087,7 @@ HTML = r"""
                 if (data.status === 'ok') {
                     const imageStyle = document.getElementById('image_style').value;
                     log(`✓ Image regenerated using ${imageStyle}`, 'success');
+                    loadPromptLog();
                     const newSrc = `/api/clip-image?title=${encodeURIComponent(title)}&name=${encodeURIComponent(clipName)}&_=${Date.now()}`;
                     // Update prompts-table cell if present
                     if (cell) {
@@ -1239,12 +1255,13 @@ HTML = r"""
             }
             _waitStyle.textContent = '* { cursor: wait !important; }';
             const imageModel = document.getElementById('image_model').value;
+            const imageStyle = document.getElementById('image_style').value;
             log(`Regenerating ${charName} via ${imageModel}...`);
 
             fetch('/api/cref/regenerate', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({title, safe_name: safeName, description, image_model: document.getElementById('image_model').value})
+                body: JSON.stringify({title, safe_name: safeName, description: `${imageStyle}, ${description}`, image_model: document.getElementById('image_model').value})
             })
             .then(r => {
                 if (!r.ok) return r.text().then(t => { throw new Error(`Server error ${r.status}: ${t.substring(0, 200)}`); });
@@ -1253,8 +1270,8 @@ HTML = r"""
             .then(data => {
                 document.getElementById('_waitCursorStyle').textContent = '';
                 if (data.status === 'ok') {
-                    const imageStyle = document.getElementById('image_style').value;
                     log(`✓ ${charName} regenerated using ${imageStyle}`, 'success');
+                    loadPromptLog();
                     const wrap = document.getElementById(`cref-img-wrap-${idx}`);
                     wrap.innerHTML = `<img src="/api/ref-image?title=${encodeURIComponent(title)}&name=${encodeURIComponent(safeName)}&_=${Date.now()}"
                         alt="${charName}" onclick="regenerateCrefImage(${idx}, '${safeName}', '${charName}')"
@@ -1654,7 +1671,7 @@ def _start_comfyui():
     return False
 
 
-def _generate_image_geminiproxy(prompt, output_path):
+def _generate_image_geminiproxy(prompt, output_path, image_style=None):
     import websocket as _ws
 
     cdp_port = 9222
@@ -1701,7 +1718,13 @@ def _generate_image_geminiproxy(prompt, output_path):
         snap_val = cdp_eval(ws, snap_js)
         existing_srcs = set(json.loads(snap_val)) if snap_val else set()
 
-        full_prompt = "generate an image of: " + prompt
+        style_desc = ""
+        if image_style:
+            style_desc = STYLE_DESCRIPTIONS.get(image_style, "")
+        if style_desc:
+            full_prompt = f"generate an image of: {style_desc}, {prompt}"
+        else:
+            full_prompt = "generate an image of: " + prompt
         ws.send(
             json.dumps(
                 {
@@ -1755,13 +1778,17 @@ def _generate_image_geminiproxy(prompt, output_path):
                 return c.toDataURL('image/png');
             }})()"""
             data_url = cdp_eval(ws, js)
-            if data_url and data_url.startswith("data:image/png;base64,"):
-                import base64 as _b64
+            try:
+                if data_url and data_url.startswith("data:image/png;base64,"):
+                    import base64 as _b64
 
-                with open(output_path, "wb") as f:
-                    f.write(_b64.b64decode(data_url.split(",", 1)[1]))
+                    with open(output_path, "wb") as f:
+                        f.write(_b64.b64decode(data_url.split(",", 1)[1]))
+                    return True
+                return False
+            finally:
                 ws.close()
-                return True
+                refocus_web_app(cdp_port)
 
         ws.close()
         return False
@@ -1803,11 +1830,11 @@ def _generate_cref_images(project_dir, image_style, image_model):
             continue
 
         print(f"Generating {char_name} via {image_model}...")
-        prompt = f"{style_desc}, {description}"
+        prompt = description
         output_path = os.path.join(project_dir, f"ref_{safe_name}.png")
 
         if image_model == "geminiproxy":
-            ok = _generate_image_geminiproxy(prompt, output_path)
+            ok = _generate_image_geminiproxy(prompt, output_path, image_style)
             if ok:
                 input_dir = "/home/henry/comfy/ComfyUI/input"
                 dst = os.path.join(input_dir, f"ref_{safe_name}.png")
@@ -1840,6 +1867,9 @@ def _generate_cref_images(project_dir, image_style, image_model):
                     if _is_flux2(image_model)
                     else "t5xxl_fp8_e4m3fn.safetensors"
                 )
+                style_desc = STYLE_DESCRIPTIONS.get(image_style, "")
+                if style_desc:
+                    prompt = f"{style_desc}, {prompt}"
                 workflow = {
                     "1": {
                         "class_type": "UNETLoader",
@@ -1897,6 +1927,9 @@ def _generate_cref_images(project_dir, image_style, image_model):
                     },
                 }
             else:
+                style_desc = STYLE_DESCRIPTIONS.get(image_style, "")
+                if style_desc:
+                    prompt = f"{style_desc}, {prompt}"
                 workflow = {
                     "3": {
                         "class_type": "KSampler",
@@ -2262,24 +2295,27 @@ def _call_ai(prompt, ai_helper, timeout=120):
         reply = None
         prev_text = None
         time.sleep(1)
-        while time.monotonic() < deadline:
-            text = pw_eval(f"""(function() {{
-                var els = document.querySelectorAll({json.dumps(selector)});
-                if (els.length <= {existing_count}) return null;
-                var last = els[els.length - 1];
-                return last.innerText.trim() || null;
-            }})()""")
-            if text and text == prev_text:
-                reply = text
-                break
-            prev_text = text
-            time.sleep(1)
-        pw.close()
-        if not reply and prev_text:
-            reply = prev_text
-        if not reply:
-            raise RuntimeError("ChatGPTProxy: timed out waiting for response")
-        return reply.strip()
+        try:
+            while time.monotonic() < deadline:
+                text = pw_eval(f"""(function() {{
+                    var els = document.querySelectorAll({json.dumps(selector)});
+                    if (els.length <= {existing_count}) return null;
+                    var last = els[els.length - 1];
+                    return last.innerText.trim() || null;
+                }})()""")
+                if text and text == prev_text:
+                    reply = text
+                    break
+                prev_text = text
+                time.sleep(1)
+            if not reply and prev_text:
+                reply = prev_text
+            if not reply:
+                raise RuntimeError("ChatGPTProxy: timed out waiting for response")
+            return reply.strip()
+        finally:
+            pw.close()
+            refocus_web_app(cdp_port)
 
     if ai_helper == "copilotproxy":
         import websocket as _ws
@@ -2410,27 +2446,30 @@ def _call_ai(prompt, ai_helper, timeout=120):
         reply = None
         prev_text = None
         time.sleep(1)
-        while time.monotonic() < deadline:
-            text = pw_eval(f"""(function() {{
-                var els = document.querySelectorAll('[data-testid="ai-message"]');
-                if (els.length <= {existing_count}) return null;
-                var last = els[els.length - 1];
-                return last.innerText.trim() || null;
-            }})()""")
-            if text and text == prev_text:
-                reply = text
-                break
-            prev_text = text
-            time.sleep(1)
-        pw.close()
-        if not reply and prev_text:
-            reply = prev_text
-        if not reply:
-            raise RuntimeError("CopilotProxy: timed out waiting for response")
-        import re as _re
+        try:
+            while time.monotonic() < deadline:
+                text = pw_eval(f"""(function() {{
+                    var els = document.querySelectorAll('[data-testid="ai-message"]');
+                    if (els.length <= {existing_count}) return null;
+                    var last = els[els.length - 1];
+                    return last.innerText.trim() || null;
+                }})()""")
+                if text and text == prev_text:
+                    reply = text
+                    break
+                prev_text = text
+                time.sleep(1)
+            if not reply and prev_text:
+                reply = prev_text
+            if not reply:
+                raise RuntimeError("CopilotProxy: timed out waiting for response")
+            import re as _re
 
-        reply = _re.sub(r"^Copilot said\s*", "", reply).strip()
-        return reply.strip()
+            reply = _re.sub(r"^Copilot said\s*", "", reply).strip()
+            return reply.strip()
+        finally:
+            pw.close()
+            refocus_web_app(cdp_port)
 
     if ai_helper == "deepseekproxy":
         import websocket as _ws
@@ -2562,24 +2601,27 @@ def _call_ai(prompt, ai_helper, timeout=120):
         reply = None
         prev_text = None
         time.sleep(1)
-        while time.monotonic() < deadline:
-            text = pw_eval(f"""(function() {{
-                var els = document.querySelectorAll('.ds-markdown, .message-assistant, [class*="assistant"], [class*="response"], .chat-message-assistant');
-                if (els.length <= {existing_count}) return null;
-                var last = els[els.length - 1];
-                return last.innerText.trim() || null;
-            }})()""")
-            if text and text == prev_text:
-                reply = text
-                break
-            prev_text = text
-            time.sleep(1)
-        pw.close()
-        if not reply and prev_text:
-            reply = prev_text
-        if not reply:
-            raise RuntimeError("DeepSeekProxy: timed out waiting for response")
-        return reply.strip()
+        try:
+            while time.monotonic() < deadline:
+                text = pw_eval(f"""(function() {{
+                    var els = document.querySelectorAll('.ds-markdown, .message-assistant, [class*="assistant"], [class*="response"], .chat-message-assistant');
+                    if (els.length <= {existing_count}) return null;
+                    var last = els[els.length - 1];
+                    return last.innerText.trim() || null;
+                }})()""")
+                if text and text == prev_text:
+                    reply = text
+                    break
+                prev_text = text
+                time.sleep(1)
+            if not reply and prev_text:
+                reply = prev_text
+            if not reply:
+                raise RuntimeError("DeepSeekProxy: timed out waiting for response")
+            return reply.strip()
+        finally:
+            pw.close()
+            refocus_web_app(cdp_port)
 
     if ai_helper == "perplexityproxy":
         import websocket as _ws
@@ -2713,24 +2755,27 @@ def _call_ai(prompt, ai_helper, timeout=120):
         reply = None
         prev_text = None
         time.sleep(1)
-        while time.monotonic() < deadline:
-            text = pw_eval(f"""(function() {{
-                var els = document.querySelectorAll({json.dumps(selector)});
-                if (els.length <= {existing_count}) return null;
-                var last = els[els.length - 1];
-                return last.innerText.trim() || null;
-            }})()""")
-            if text and text == prev_text:
-                reply = text
-                break
-            prev_text = text
-            time.sleep(1)
-        pw.close()
-        if not reply and prev_text:
-            reply = prev_text
-        if not reply:
-            raise RuntimeError("PerplexityProxy: timed out waiting for response")
-        return reply.strip()
+        try:
+            while time.monotonic() < deadline:
+                text = pw_eval(f"""(function() {{
+                    var els = document.querySelectorAll({json.dumps(selector)});
+                    if (els.length <= {existing_count}) return null;
+                    var last = els[els.length - 1];
+                    return last.innerText.trim() || null;
+                }})()""")
+                if text and text == prev_text:
+                    reply = text
+                    break
+                prev_text = text
+                time.sleep(1)
+            if not reply and prev_text:
+                reply = prev_text
+            if not reply:
+                raise RuntimeError("PerplexityProxy: timed out waiting for response")
+            return reply.strip()
+        finally:
+            pw.close()
+            refocus_web_app(cdp_port)
 
     if ai_helper == "xiaomiproxy":
         import websocket as _ws
@@ -2863,31 +2908,34 @@ def _call_ai(prompt, ai_helper, timeout=120):
         reply = None
         prev_len = 0
         time.sleep(3)
-        while time.monotonic() < deadline:
-            val = pw_eval("""(function() {
-                return document.body ? document.body.innerText : '';
-            })()""")
-            if val and len(val) > prev_len:
-                prev_len = len(val)
-                reply = val
-            elif val and len(val) == prev_len and prev_len > 0:
-                break
-            time.sleep(2)
-        pw.close()
-        if not reply:
-            raise RuntimeError("XiaomiProxy: timed out waiting for response")
-        import re as _re
+        try:
+            while time.monotonic() < deadline:
+                val = pw_eval("""(function() {
+                    return document.body ? document.body.innerText : '';
+                })()""")
+                if val and len(val) > prev_len:
+                    prev_len = len(val)
+                    reply = val
+                elif val and len(val) == prev_len and prev_len > 0:
+                    break
+                time.sleep(2)
+            if not reply:
+                raise RuntimeError("XiaomiProxy: timed out waiting for response")
+            import re as _re
 
-        matches = list(
-            _re.finditer(
-                r"Thought for [\d.]+ seconds?\s*(.+?)(?=\s*(?:MiMo-V2-Pro|Developer demo|Citation sources|$))",
-                reply,
-                _re.DOTALL,
+            matches = list(
+                _re.finditer(
+                    r"Thought for [\d.]+ seconds?\s*(.+?)(?=\s*(?:MiMo-V2-Pro|Developer demo|Citation sources|$))",
+                    reply,
+                    _re.DOTALL,
+                )
             )
-        )
-        if matches:
-            return matches[-1].group(1).strip()
-        return reply.strip()
+            if matches:
+                return matches[-1].group(1).strip()
+            return reply.strip()
+        finally:
+            pw.close()
+            refocus_web_app(cdp_port)
 
     if ai_helper == "geminiproxy":
         cdp_port = 9222
@@ -2975,23 +3023,26 @@ def _call_ai(prompt, ai_helper, timeout=120):
         reply = None
         prev_text = None
         time.sleep(1)
-        while time.monotonic() < deadline:
-            val = cdp_eval(f"""(function() {{
-                var els = document.querySelectorAll({json.dumps(selector)});
-                if (els.length <= {existing_count}) return null;
-                return els[els.length - 1].innerText.trim() || null;
-            }})()""")
-            if val and val == prev_text:
-                reply = val
-                break
-            prev_text = val
-            time.sleep(1)
-        ws.close()
-        if not reply and prev_text:
-            reply = prev_text
-        if not reply:
-            raise RuntimeError("GeminiProxy: timed out waiting for response")
-        return reply.strip()
+        try:
+            while time.monotonic() < deadline:
+                val = cdp_eval(f"""(function() {{
+                    var els = document.querySelectorAll({json.dumps(selector)});
+                    if (els.length <= {existing_count}) return null;
+                    return els[els.length - 1].innerText.trim() || null;
+                }})()""")
+                if val and val == prev_text:
+                    reply = val
+                    break
+                prev_text = val
+                time.sleep(1)
+            if not reply and prev_text:
+                reply = prev_text
+            if not reply:
+                raise RuntimeError("GeminiProxy: timed out waiting for response")
+            return reply.strip()
+        finally:
+            ws.close()
+            refocus_web_app(cdp_port)
 
     if ai_helper == "google":
         from google import genai
@@ -3160,7 +3211,7 @@ def _capture_current_geminiproxy_image(output_path):
         return False
 
 
-def _generate_thumbnail_image_geminiproxy(prompt, output_path):
+def _generate_thumbnail_image_geminiproxy(prompt, output_path, image_style=None):
     """Generate a thumbnail image via GeminiProxy CDP. Returns True on success."""
     import websocket as _ws
     import base64 as _b64
@@ -3219,7 +3270,13 @@ def _generate_thumbnail_image_geminiproxy(prompt, output_path):
         )
         time.sleep(0.3)
 
-        full_prompt = "generate an image of: " + prompt
+        style_desc = ""
+        if image_style:
+            style_desc = STYLE_DESCRIPTIONS.get(image_style, "")
+        if style_desc:
+            full_prompt = f"generate an image of: {style_desc}, {prompt}"
+        else:
+            full_prompt = "generate an image of: " + prompt
         ws.send(
             json.dumps(
                 {
@@ -3329,12 +3386,15 @@ def _generate_thumbnail_image_geminiproxy(prompt, output_path):
             if msg.get("id") == pid:
                 screenshot_data = msg.get("result", {}).get("data")
                 break
-        ws.close()
-        if screenshot_data:
-            with open(output_path, "wb") as f:
-                f.write(_b64.b64decode(screenshot_data))
-            return True
-        return False
+        try:
+            if screenshot_data:
+                with open(output_path, "wb") as f:
+                    f.write(_b64.b64decode(screenshot_data))
+                return True
+            return False
+        finally:
+            ws.close()
+            refocus_web_app(cdp_port)
     except Exception as e:
         _pipeline.push(f"⚠ GeminiProxy error: {e}", "error")
         return False
@@ -3392,7 +3452,9 @@ def _generate_thumbnail_and_metadata(
         from datetime import datetime
 
         ts = datetime.now().strftime("%H:%M:%S")
-        safe_prompt = image_prompt.replace("\n", " ").replace("\r", " ")
+        style_desc = STYLE_DESCRIPTIONS.get(image_style, "")
+        full_prompt_log = f"{style_desc}, {image_prompt}" if style_desc else image_prompt
+        safe_prompt = full_prompt_log.replace("\n", " ").replace("\r", " ")
         with open(APP_PROMPT_LOG, "a") as f:
             f.write(f"[{ts}] thumbnail: {safe_prompt}\n")
     else:
@@ -3758,7 +3820,11 @@ def _build_narration_prompt(title, story_type, sentence_count=30):
 
 
 def _parse_narration_response(
-    full_content, narration_path, rawprompt_path, cref_path=None
+    full_content,
+    narration_path,
+    rawprompt_path,
+    cref_path=None,
+    image_style="Stick Figure",
 ):
     """Split AI response into narration, prompts, CREF, and RP sections, write files."""
     # Extract sections by known markers
@@ -3800,29 +3866,58 @@ def _parse_narration_response(
     if rp_content:
         rp_path = os.path.join(os.path.dirname(narration_path), "prompts.txt")
         rp_lines = [l.strip() for l in rp_content.split("\n") if l.strip()]
-        # Read narration sentences to pair with each prompt
         narration_sentences = []
         if os.path.exists(narration_path):
             with open(narration_path) as nf:
                 narration_sentences = [l.strip() for l in nf if l.strip()]
+        style_desc = STYLE_DESCRIPTIONS.get(
+            image_style, STYLE_DESCRIPTIONS["Stick Figure"]
+        )
+        # Build set of style sentence fragments for dedup
+        style_fragments = set()
+        if style_desc:
+            for s in re.split(r"\.\s*,?\s*", style_desc):
+                s = s.strip().lower().rstrip(".")
+                if len(s) > 10:
+                    style_fragments.add(s)
         with open(rp_path, "w") as f:
-            f.write("Video Generation Prompts\n")
             f.write("=" * 40 + "\n\n")
             for i, line in enumerate(rp_lines, 1):
-                # Strip any existing numbering (e.g. "1. ", "Prompt 1: ", etc.)
+                # Strip numbering and "Prompt N:" prefix
                 cleaned = re.sub(
                     r"^(?:Prompt\s*\d+[\.\:]\s*)?(?:\d+[\.\)]\s*)?", "", line
-                )
+                ).strip()
+                # Remove ALL occurrences of style fragments to prevent duplication
+                for frag in sorted(style_fragments, key=len, reverse=True):
+                    escaped = re.escape(frag)
+                    cleaned = re.sub(
+                        r",?\s*" + escaped + r"\.?\s*,?",
+                        ", ",
+                        cleaned,
+                        flags=re.IGNORECASE,
+                    )
+                # Clean up: collapse multiple commas/spaces, trim
+                cleaned = re.sub(r",\s*,", ",", cleaned)
+                cleaned = re.sub(r"\s+", " ", cleaned).strip(",. ")
+                # Prepend style once, cleanly - DEFERRED TO GENERATION TIME
+                # if style_desc:
+                #     cleaned = f"{style_desc}, {cleaned}"
                 sentence = (
                     narration_sentences[i - 1]
                     if i - 1 < len(narration_sentences)
                     else ""
                 )
-                f.write(f"Prompt {i}: {cleaned}|||{sentence}\n\n")
+                f.write(f"{cleaned}|||{sentence}\n\n")
 
 
 def _generate_narration(
-    title, story_type, narration_path, ai_helper, project_dir=None, sentence_count=30
+    title,
+    story_type,
+    narration_path,
+    ai_helper,
+    project_dir=None,
+    sentence_count=30,
+    image_style="Stick Figure",
 ):
     """Generate narration.txt, RawPrompt.txt, and CREF.txt using the configured AI helper. Returns prompt or raises."""
     prompt = _build_narration_prompt(title, story_type, sentence_count)
@@ -3848,7 +3943,7 @@ def _generate_narration(
         if not full_content:
             raise RuntimeError("key-service returned empty reply")
         _parse_narration_response(
-            full_content, narration_path, rawprompt_path, cref_path
+            full_content, narration_path, rawprompt_path, cref_path, image_style
         )
         return prompt
 
@@ -3941,29 +4036,32 @@ def _generate_narration(
         reply = None
         prev_reply = None
         time.sleep(3)
-        while time.monotonic() < deadline:
-            val = cdp_eval(f"""(function() {{
-                var els = document.querySelectorAll({json.dumps(selector)});
-                if (!els.length) return null;
-                return els[els.length - 1].innerText || null;
-            }})()""")
-            if val and val == pre_last:
-                val = None
-            if val and val == prev_reply:
-                reply = val
-                break
-            prev_reply = val
-            time.sleep(2)
-        ws.close()
-        if not reply:
-            raise RuntimeError("GeminiProxy: timed out waiting for response")
-        full_content = reply.strip()
-        if not full_content:
-            raise RuntimeError("GeminiProxy returned empty reply")
-        _parse_narration_response(
-            full_content, narration_path, rawprompt_path, cref_path
-        )
-        return prompt
+        try:
+            while time.monotonic() < deadline:
+                val = cdp_eval(f"""(function() {{
+                    var els = document.querySelectorAll({json.dumps(selector)});
+                    if (!els.length) return null;
+                    return els[els.length - 1].innerText || null;
+                }})()""")
+                if val and val == pre_last:
+                    val = None
+                if val and val == prev_reply:
+                    reply = val
+                    break
+                prev_reply = val
+                time.sleep(2)
+            if not reply:
+                raise RuntimeError("GeminiProxy: timed out waiting for response")
+            full_content = reply.strip()
+            if not full_content:
+                raise RuntimeError("GeminiProxy returned empty reply")
+            _parse_narration_response(
+                full_content, narration_path, rawprompt_path, cref_path, image_style
+            )
+            return prompt
+        finally:
+            ws.close()
+            refocus_web_app(cdp_port)
 
     if ai_helper == "google":
         from google import genai
@@ -4016,7 +4114,7 @@ def _generate_narration(
         if not full_content:
             raise RuntimeError("Google returned empty reply")
         _parse_narration_response(
-            full_content, narration_path, rawprompt_path, cref_path
+            full_content, narration_path, rawprompt_path, cref_path, image_style
         )
         return prompt
 
@@ -4032,7 +4130,7 @@ def _generate_narration(
         if not full_content:
             raise RuntimeError(f"{ai_helper} returned empty reply")
         _parse_narration_response(
-            full_content, narration_path, rawprompt_path, cref_path
+            full_content, narration_path, rawprompt_path, cref_path, image_style
         )
         return prompt
 
@@ -4059,7 +4157,9 @@ def _generate_narration(
     if not full_content:
         stderr = ansi_escape.sub("", result.stderr).strip()
         raise RuntimeError(stderr or "opencode returned empty output")
-    _parse_narration_response(full_content, narration_path, rawprompt_path, cref_path)
+    _parse_narration_response(
+        full_content, narration_path, rawprompt_path, cref_path, image_style
+    )
     if not os.path.exists(narration_path) or os.path.getsize(narration_path) == 0:
         raise RuntimeError(
             "opencode did not create narration.txt — check output format"
@@ -4106,6 +4206,7 @@ def _run_pipeline(
                     ai_helper,
                     project_dir,
                     sentence_count,
+                    proj_cfg.get("image_style", "Stick Figure"),
                 )
                 p.push(f"✓ Narration created: {narration_path}", "success")
         else:
@@ -4321,7 +4422,7 @@ def get_prompts():
                         "raw": raw,
                     }
                 )
-            elif line.startswith("Prompt"):
+            else:
                 raw = rawprompts[len(prompts)] if len(prompts) < len(rawprompts) else ""
                 prompts.append({"sentence": "", "prompt": line, "raw": raw})
     return jsonify({"prompts": prompts})
@@ -4517,14 +4618,24 @@ def regenerate_cref():
             config = json.load(f)
             image_style = config.get("image_style", "Stick Figure")
 
-    style_desc = STYLE_DESCRIPTIONS.get(image_style, STYLE_DESCRIPTIONS["Stick Figure"])
-    prompt = f"{style_desc}, {description}"
+    prompt = description
+    style_desc = STYLE_DESCRIPTIONS.get(image_style, "")
+    full_prompt_log = f"{style_desc}, {prompt}" if style_desc else prompt
+
+    # Log the image generation prompt
+    from datetime import datetime
+
+    ts = datetime.now().strftime("%H:%M:%S")
+    safe_prompt = full_prompt_log.replace("\n", " ").replace("\r", " ")
+    with open(APP_PROMPT_LOG, "a") as f:
+        f.write(f"[{ts}] {image_model}: {safe_prompt}\n")
+
     output_path = os.path.join(project_dir, f"ref_{safe_name}.png")
     comfy_input = "/home/henry/comfy/ComfyUI/input"
 
     try:
         if image_model == "geminiproxy":
-            ok = _generate_thumbnail_image_geminiproxy(prompt, output_path)
+            ok = _generate_thumbnail_image_geminiproxy(prompt, output_path, image_style)
             if not ok:
                 return jsonify({"status": "error", "error": "GeminiProxy failed"})
             if os.path.exists(output_path) and os.path.isdir(comfy_input):
@@ -4735,7 +4846,7 @@ def regenerate_clip():
             stripped = line.strip()
             if not stripped or "=" in stripped or "Video Generation" in stripped:
                 continue
-            if "|||" in stripped or stripped.startswith("Prompt"):
+            if True: # It's a valid prompt line
                 if prompt_count == idx:
                     # Preserve the sentence part if present
                     if "|||" in stripped:
@@ -4762,12 +4873,17 @@ def regenerate_clip():
             config = json.load(f)
             image_style = config.get("image_style", "Stick Figure")
 
-    # Prepend style description if not already present
-    style_desc = STYLE_DESCRIPTIONS.get(image_style, STYLE_DESCRIPTIONS["Stick Figure"])
-    if style_desc.lower() not in new_prompt.lower():
-        gen_prompt = f"{style_desc}, {new_prompt}"
-    else:
-        gen_prompt = new_prompt
+    gen_prompt = new_prompt
+
+    # Log the image generation prompt
+    from datetime import datetime
+
+    ts = datetime.now().strftime("%H:%M:%S")
+    style_desc = STYLE_DESCRIPTIONS.get(image_style, "")
+    full_prompt_log = f"{style_desc}, {gen_prompt}" if style_desc else gen_prompt
+    safe_gen_prompt = full_prompt_log.replace("\n", " ").replace("\r", " ")
+    with open(APP_PROMPT_LOG, "a") as f:
+        f.write(f"[{ts}] {image_model}: {safe_gen_prompt}\n")
 
     clip_path = os.path.join(project_dir, "clips", clip_name)
     os.makedirs(os.path.dirname(clip_path), exist_ok=True)
@@ -4785,7 +4901,7 @@ def regenerate_clip():
             os.makedirs(tmp_dir, exist_ok=True)
             shutil.copy2(config_path, os.path.join(tmp_dir, "project.json"))
             with open(os.path.join(tmp_dir, "prompts.txt"), "w") as f:
-                f.write(f"Prompt 1: {gen_prompt}|||{title}\n")
+                f.write(f"{gen_prompt}|||{title}\n")
             # Copy reference images so generatevideo.py can find them
             for fname in os.listdir(project_dir):
                 if fname.startswith("ref_") and fname.endswith(".png"):
@@ -4950,7 +5066,7 @@ def regenerate_thumbnail():
     _pipeline.logs.clear()
     try:
         _generate_thumbnail_and_metadata(
-            title, project_dir, narration_text, ai_helper, image_model, image_style
+            title, project_dir, narration_text, ai_helper, image_model
         )
         _pipeline.running = False
         if os.path.exists(thumb_path):

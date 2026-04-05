@@ -19,6 +19,18 @@ import shutil
 import json
 import base64
 
+def refocus_web_app(cdp_port=9222):
+    """Attempt to bring the user's web app tab back into focus."""
+    try:
+        resp = requests.get(f"http://localhost:{cdp_port}/json", timeout=1)
+        for tab in resp.json():
+            url = tab.get("url", "")
+            if tab.get("type") == "page" and "7070" in url:
+                requests.get(f"http://localhost:{cdp_port}/json/activate/{tab['id']}", timeout=1)
+                break
+    except Exception:
+        pass
+
 COMFYUI_URL = "http://127.0.0.1:8188"
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PARENT_DIR = os.path.dirname(SCRIPT_DIR)
@@ -173,23 +185,26 @@ def _call_ai(prompt, ai_helper, timeout=120):
         reply = None
         prev_reply = None
         time.sleep(3)
-        while time.monotonic() < deadline:
-            val = cdp_eval(f"""(function() {{
-                var els = document.querySelectorAll({_json.dumps(selector)});
-                if (!els.length) return null;
-                return els[els.length - 1].innerText || null;
-            }})()""")
-            if val and val == pre_last:
-                val = None
-            if val and val == prev_reply:
-                reply = val
-                break
-            prev_reply = val
-            time.sleep(2)
-        ws.close()
-        if not reply:
-            raise RuntimeError("GeminiProxy: timed out waiting for response")
-        return reply.strip()
+        try:
+            while time.monotonic() < deadline:
+                val = cdp_eval(f"""(function() {{
+                    var els = document.querySelectorAll({_json.dumps(selector)});
+                    if (!els.length) return null;
+                    return els[els.length - 1].innerText || null;
+                }})()""")
+                if val and val == pre_last:
+                    val = None
+                if val and val == prev_reply:
+                    reply = val
+                    break
+                prev_reply = val
+                time.sleep(2)
+            if not reply:
+                raise RuntimeError("GeminiProxy: timed out waiting for response")
+            return reply.strip()
+        finally:
+            ws.close()
+            refocus_web_app(cdp_port)
 
     # Proxy helpers: delegate to CDP-based implementations
     if ai_helper in (
@@ -345,24 +360,27 @@ def _call_ai(prompt, ai_helper, timeout=120):
         reply = None
         prev_text = None
         time.sleep(1)
-        while time.monotonic() < deadline:
-            text = pw_eval(f"""(function() {{
-                var els = document.querySelectorAll({_json.dumps(selector)});
-                if (els.length <= {existing_count}) return null;
-                var last = els[els.length - 1];
-                return last.innerText.trim() || null;
-            }})()""")
-            if text and text == prev_text:
-                reply = text
-                break
-            prev_text = text
-            time.sleep(1)
-        pw.close()
-        if not reply and prev_text:
-            reply = prev_text
-        if not reply:
-            raise RuntimeError(f"{ai_helper}: timed out waiting for response")
-        return reply.strip()
+        try:
+            while time.monotonic() < deadline:
+                text = pw_eval(f"""(function() {{
+                    var els = document.querySelectorAll({_json.dumps(selector)});
+                    if (els.length <= {existing_count}) return null;
+                    var last = els[els.length - 1];
+                    return last.innerText.trim() || null;
+                }})()""")
+                if text and text == prev_text:
+                    reply = text
+                    break
+                prev_text = text
+                time.sleep(1)
+            if not reply and prev_text:
+                reply = prev_text
+            if not reply:
+                raise RuntimeError(f"{ai_helper}: timed out waiting for response")
+            return reply.strip()
+        finally:
+            pw.close()
+            refocus_web_app(cdp_port)
 
     # Default: opencode
     result = subprocess.run(
@@ -522,7 +540,7 @@ def start_comfyui():
     return False
 
 
-def _generate_image_geminiproxy(prompt, output_path):
+def _generate_image_geminiproxy(prompt, output_path, image_style=None):
     import websocket as _ws
 
     cdp_port = 9222
@@ -569,7 +587,13 @@ def _generate_image_geminiproxy(prompt, output_path):
         snap_val = cdp_eval(ws, snap_js)
         existing_srcs = set(json.loads(snap_val)) if snap_val else set()
 
-        full_prompt = "generate an image of: " + prompt
+        style_desc = ""
+        if image_style:
+            style_desc = STYLE_DESCRIPTIONS.get(image_style, "")
+        if style_desc:
+            full_prompt = f"generate an image of: {style_desc}, {prompt}"
+        else:
+            full_prompt = "generate an image of: " + prompt
         ws.send(
             json.dumps(
                 {
@@ -628,14 +652,19 @@ def _generate_image_geminiproxy(prompt, output_path):
 
                 with open(output_path, "wb") as f:
                     f.write(_b64.b64decode(data_url.split(",", 1)[1]))
-                ws.close()
                 return True
 
-        ws.close()
         return False
     except Exception as e:
         print(f"  GeminiProxy error: {e}")
         return False
+    finally:
+        # ws might not be defined if it fails early, but it's safe if it is
+        try:
+            ws.close()
+        except:
+            pass
+        refocus_web_app(cdp_port)
 
 
 def generate_reference_images(
@@ -643,8 +672,6 @@ def generate_reference_images(
 ):
     if image_model is None:
         image_model = IMAGE_MODEL
-
-    style_desc = STYLE_DESCRIPTIONS.get(image_style, STYLE_DESCRIPTIONS["Stick Figure"])
 
     for char_name, description in character_descriptions.items():
         if char_name.lower() == "filler":
@@ -656,11 +683,10 @@ def generate_reference_images(
             continue
 
         print(f"Generating {char_name} via {image_model}...")
-        prompt = f"{style_desc}, {description}"
+        prompt = description
         output_path = os.path.join(output_dir, f"ref_{safe_name}.png")
-
         if image_model == "geminiproxy":
-            ok = _generate_image_geminiproxy(prompt, output_path)
+            ok = _generate_image_geminiproxy(prompt, output_path, image_style)
             if ok:
                 input_dir = "/home/henry/comfy/ComfyUI/input"
                 dst = os.path.join(input_dir, f"ref_{safe_name}.png")
@@ -683,6 +709,9 @@ def generate_reference_images(
                 return "flux2" in m.lower()
 
             if _is_flux(image_model):
+                style_desc = STYLE_DESCRIPTIONS.get(image_style, "")
+                if style_desc:
+                    prompt = f"{style_desc}, {prompt}"
                 vae = (
                     "flux2-vae.safetensors"
                     if _is_flux2(image_model)
@@ -750,6 +779,9 @@ def generate_reference_images(
                     },
                 }
             else:
+                style_desc = STYLE_DESCRIPTIONS.get(image_style, "")
+                if style_desc:
+                    prompt = f"{style_desc}, {prompt}"
                 workflow = {
                     "3": {
                         "class_type": "KSampler",

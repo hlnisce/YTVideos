@@ -16,6 +16,20 @@ import requests
 import time
 import shutil
 import json
+import base64
+import requests
+
+def refocus_web_app(cdp_port=9222):
+    """Attempt to bring the user's web app tab back into focus."""
+    try:
+        resp = requests.get(f"http://localhost:{cdp_port}/json", timeout=1)
+        for tab in resp.json():
+            url = tab.get("url", "")
+            if tab.get("type") == "page" and "7070" in url:
+                requests.get(f"http://localhost:{cdp_port}/json/activate/{tab['id']}", timeout=1)
+                break
+    except Exception:
+        pass
 
 COMFYUI_URL = "http://127.0.0.1:8188"
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -162,23 +176,26 @@ def _call_ai(prompt, ai_helper, timeout=120):
         reply = None
         prev_reply = None
         time.sleep(3)
-        while time.monotonic() < deadline:
-            val = cdp_eval(f"""(function() {{
-                var els = document.querySelectorAll({json.dumps(selector)});
-                if (!els.length) return null;
-                return els[els.length - 1].innerText || null;
-            }})()""")
-            if val and val == pre_last:
-                val = None
-            if val and val == prev_reply:
-                reply = val
-                break
-            prev_reply = val
-            time.sleep(2)
-        ws.close()
-        if not reply:
-            raise RuntimeError("GeminiProxy: timed out waiting for response")
-        return reply.strip()
+        try:
+            while time.monotonic() < deadline:
+                val = cdp_eval(f"""(function() {{
+                    var els = document.querySelectorAll({json.dumps(selector)});
+                    if (!els.length) return null;
+                    return els[els.length - 1].innerText || null;
+                }})()""")
+                if val and val == pre_last:
+                    val = None
+                if val and val == prev_reply:
+                    reply = val
+                    break
+                prev_reply = val
+                time.sleep(2)
+            if not reply:
+                raise RuntimeError("GeminiProxy: timed out waiting for response")
+            return reply.strip()
+        finally:
+            ws.close()
+            refocus_web_app(cdp_port)
 
     if ai_helper == "google":
         from google import genai
@@ -472,8 +489,6 @@ def generate_prompts_file(
     rawprompt_path = os.path.join(output_dir, "RawPrompt.txt")
     narration_text = "\n".join(narration_lines)
 
-    style_desc = STYLE_DESCRIPTIONS.get(image_style, STYLE_DESCRIPTIONS["Stick Figure"])
-
     # Determine main character
     narration_lower = narration_text.lower()
     sorted_chars = sorted(
@@ -503,21 +518,19 @@ def generate_prompts_file(
     # Skip AI rewrite — prompts already include character details from Step 1
 
     with open(prompts_path, "w") as f:
-        f.write("Video Generation Prompts\n")
-        f.write("=" * 40 + "\n\n")
 
         for i, line in enumerate(source_lines, 1):
             line = line.strip()
             if not line:
                 continue
             line = re.sub(r"^\d+\.\s*", "", line)
-            prompt = f"{style_desc}, {line}"
+            prompt = line
 
             narration_sentence = (
                 narration_lines[i - 1].strip() if i - 1 < len(narration_lines) else line
             )
             narration_sentence = re.sub(r"^\d+\.\s*", "", narration_sentence)
-            f.write(f"Prompt {i}: {prompt}|||{narration_sentence}\n\n")
+            f.write(f"{prompt}|||{narration_sentence}\n\n")
 
     print(f"Generated: {prompts_path}")
     return len(source_lines)
@@ -552,7 +565,7 @@ def start_comfyui():
     return False
 
 
-def _generate_image_geminiproxy(prompt, output_path):
+def _generate_image_geminiproxy(prompt, output_path, image_style=None):
     import websocket as _ws
 
     cdp_port = 9222
@@ -599,7 +612,13 @@ def _generate_image_geminiproxy(prompt, output_path):
         snap_val = cdp_eval(ws, snap_js)
         existing_srcs = set(json.loads(snap_val)) if snap_val else set()
 
-        full_prompt = "generate an image of: " + prompt
+        style_desc = ""
+        if image_style:
+            style_desc = STYLE_DESCRIPTIONS.get(image_style, "")
+        if style_desc:
+            full_prompt = f"generate an image of: {style_desc}, {prompt}"
+        else:
+            full_prompt = "generate an image of: " + prompt
         ws.send(
             json.dumps(
                 {
@@ -678,8 +697,6 @@ def generate_reference_images(
     if image_model is None:
         image_model = IMAGE_MODEL
 
-    style_desc = STYLE_DESCRIPTIONS.get(image_style, STYLE_DESCRIPTIONS["Stick Figure"])
-
     for char_name, description in character_descriptions.items():
         safe_name = re.sub(r"[^a-zA-Z0-9]", "_", char_name).lower()
 
@@ -688,11 +705,11 @@ def generate_reference_images(
             continue
 
         print(f"Generating {char_name} via {image_model}...")
-        prompt = f"{style_desc}, {description}"
+        prompt = description
         output_path = os.path.join(output_dir, f"ref_{safe_name}.png")
 
         if image_model == "geminiproxy":
-            ok = _generate_image_geminiproxy(prompt, output_path)
+            ok = _generate_image_geminiproxy(prompt, output_path, image_style)
             if ok:
                 input_dir = "/home/henry/comfy/ComfyUI/input"
                 dst = os.path.join(input_dir, f"ref_{safe_name}.png")
@@ -715,6 +732,9 @@ def generate_reference_images(
                 return "flux2" in m.lower()
 
             if _is_flux(image_model):
+                style_desc = STYLE_DESCRIPTIONS.get(image_style, "")
+                if style_desc:
+                    prompt = f"{style_desc}, {prompt}"
                 vae = (
                     "flux2-vae.safetensors"
                     if _is_flux2(image_model)
@@ -808,7 +828,14 @@ def generate_reference_images(
                     },
                     "6": {
                         "class_type": "CLIPTextEncode",
-                        "inputs": {"clip": ["4", 1], "text": prompt},
+                        "inputs": {
+                            "clip": ["4", 1],
+                            "text": (
+                                STYLE_DESCRIPTIONS.get(image_style, "") + ", " + prompt
+                                if STYLE_DESCRIPTIONS.get(image_style, "")
+                                else prompt
+                            ),
+                        },
                     },
                     "7": {
                         "class_type": "CLIPTextEncode",
