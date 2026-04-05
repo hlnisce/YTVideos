@@ -330,9 +330,6 @@ HTML = r"""
                                 <input type="checkbox" id="step_narration" checked style="width:auto;" /> Narration
                             </label>
                             <label style="font-size:13px; cursor:pointer; display:flex; align-items:center; gap:4px;">
-                                <input type="checkbox" id="step_prep_cref" checked style="width:auto;" /> Prep CREF
-                            </label>
-                            <label style="font-size:13px; cursor:pointer; display:flex; align-items:center; gap:4px;">
                                 <input type="checkbox" id="step_prompts" checked style="width:auto;" /> Prompts
                             </label>
                             <label style="font-size:13px; cursor:pointer; display:flex; align-items:center; gap:4px;">
@@ -837,7 +834,7 @@ HTML = r"""
             const wrap = document.getElementById('thumbPreviewWrap');
             wrap.style.cursor = 'wait';
             document.body.style.cursor = 'wait';
-            log('Regenerating thumbnail...');
+            log(`Regenerating thumbnail via ${imageModel}...`);
             startPolling();
             fetch('/api/thumbnail/regenerate', {
                 method: 'POST',
@@ -849,7 +846,7 @@ HTML = r"""
                 wrap.style.cursor = 'pointer';
                 document.body.style.cursor = '';
                 if (data.status === 'ok') {
-                    log('✓ Thumbnail regenerated', 'success');
+                    log(`✓ Thumbnail regenerated using ${imageStyle}`, 'success');
                     loadThumbnail(title);
                 } else {
                     log('✗ ' + (data.error || 'Failed'), 'error');
@@ -934,7 +931,6 @@ HTML = r"""
                     document.getElementById('transition_style').value = data.transition_style || 'None';
                     document.getElementById('transition_duration').value = data.transition_duration !== undefined ? data.transition_duration : 1.0;
                     document.getElementById('step_narration').checked = data.step_narration !== false;
-                    document.getElementById('step_prep_cref').checked = data.step_prep_cref !== false;
                     document.getElementById('step_prompts').checked = data.step_prompts !== false;
                     document.getElementById('step_thumbnail').checked = data.step_thumbnail !== false;
                     document.getElementById('step_clips').checked = data.step_clips !== false;
@@ -1059,12 +1055,13 @@ HTML = r"""
                 document.head.appendChild(_waitStyle);
             }
             _waitStyle.textContent = '* { cursor: wait !important; }';
-            log(`Regenerating ${clipName}...`);
+            const imageModel = document.getElementById('image_model').value;
+            log(`Regenerating ${clipName} via ${imageModel}...`);
 
             fetch('/api/clip/regenerate', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({title, clip_name: clipName, prompt, index: idx})
+                body: JSON.stringify({title, clip_name: clipName, prompt, index: idx, image_model: imageModel})
             })
             .then(r => {
                 if (!r.ok) return r.text().then(t => { throw new Error(`Server error ${r.status}: ${t.substring(0, 200)}`); });
@@ -1073,7 +1070,8 @@ HTML = r"""
             .then(data => {
                 document.getElementById('_waitCursorStyle').textContent = '';
                 if (data.status === 'ok') {
-                    log('✓ Image regenerated', 'success');
+                    const imageStyle = document.getElementById('image_style').value;
+                    log(`✓ Image regenerated using ${imageStyle}`, 'success');
                     const newSrc = `/api/clip-image?title=${encodeURIComponent(title)}&name=${encodeURIComponent(clipName)}&_=${Date.now()}`;
                     // Update prompts-table cell if present
                     if (cell) {
@@ -1240,12 +1238,13 @@ HTML = r"""
                 document.head.appendChild(_waitStyle);
             }
             _waitStyle.textContent = '* { cursor: wait !important; }';
-            log(`Regenerating ${charName}...`);
+            const imageModel = document.getElementById('image_model').value;
+            log(`Regenerating ${charName} via ${imageModel}...`);
 
             fetch('/api/cref/regenerate', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({title, safe_name: safeName, description})
+                body: JSON.stringify({title, safe_name: safeName, description, image_model: document.getElementById('image_model').value})
             })
             .then(r => {
                 if (!r.ok) return r.text().then(t => { throw new Error(`Server error ${r.status}: ${t.substring(0, 200)}`); });
@@ -1254,7 +1253,8 @@ HTML = r"""
             .then(data => {
                 document.getElementById('_waitCursorStyle').textContent = '';
                 if (data.status === 'ok') {
-                    log(`✓ ${charName} regenerated`, 'success');
+                    const imageStyle = document.getElementById('image_style').value;
+                    log(`✓ ${charName} regenerated using ${imageStyle}`, 'success');
                     const wrap = document.getElementById(`cref-img-wrap-${idx}`);
                     wrap.innerHTML = `<img src="/api/ref-image?title=${encodeURIComponent(title)}&name=${encodeURIComponent(safeName)}&_=${Date.now()}"
                         alt="${charName}" onclick="regenerateCrefImage(${idx}, '${safeName}', '${charName}')"
@@ -1284,7 +1284,6 @@ HTML = r"""
                 transition_style: document.getElementById('transition_style').value,
                 transition_duration: parseFloat(document.getElementById('transition_duration').value) || 1.0,
                 step_narration: document.getElementById('step_narration').checked,
-                step_prep_cref: document.getElementById('step_prep_cref').checked,
                 step_prompts: document.getElementById('step_prompts').checked,
                 step_thumbnail: document.getElementById('step_thumbnail').checked,
                 step_clips: document.getElementById('step_clips').checked,
@@ -1625,6 +1624,359 @@ GENERATEVIDEO_SCRIPT = os.path.join(
 
 _active_proc = None  # currently running subprocess
 
+COMFYUI_URL = "http://127.0.0.1:8188"
+COMFYUI_DIR = "/home/henry/comfy/ComfyUI"
+COMFYUI_PYTHON = "/home/henry/comfy-venv/bin/python"
+
+
+def _comfyui_available():
+    try:
+        requests.get(f"{COMFYUI_URL}/system_stats", timeout=3)
+        return True
+    except Exception:
+        return False
+
+
+def _start_comfyui():
+    print("Starting ComfyUI...")
+    subprocess.Popen(
+        [COMFYUI_PYTHON, "main.py", "--listen", "127.0.0.1"],
+        cwd=COMFYUI_DIR,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    for _ in range(60):
+        time.sleep(1)
+        if _comfyui_available():
+            print("ComfyUI is ready")
+            return True
+    print("ComfyUI did not start in time — skipping reference image generation")
+    return False
+
+
+def _generate_image_geminiproxy(prompt, output_path):
+    import websocket as _ws
+
+    cdp_port = 9222
+    tab_url = "gemini.google.com"
+    img_selector = "img.image"
+    try:
+        resp = requests.get(f"http://localhost:{cdp_port}/json", timeout=3)
+        tabs = [
+            t
+            for t in resp.json()
+            if t.get("type") == "page" and tab_url in t.get("url", "")
+        ]
+        if not tabs:
+            raise RuntimeError(f"No Chrome tab found for {tab_url}")
+        tab = tabs[0]
+        ws_url = tab["webSocketDebuggerUrl"]
+        requests.get(
+            f"http://localhost:{cdp_port}/json/activate/{tab['id']}", timeout=3
+        )
+        time.sleep(0.5)
+        msg_id = [1]
+
+        def cdp_eval(ws, js):
+            pid = msg_id[0]
+            msg_id[0] += 1
+            ws.send(
+                json.dumps(
+                    {
+                        "id": pid,
+                        "method": "Runtime.evaluate",
+                        "params": {"expression": js, "awaitPromise": True},
+                    }
+                )
+            )
+            deadline = time.monotonic() + 30
+            while time.monotonic() < deadline:
+                msg = json.loads(ws.recv())
+                if msg.get("id") == pid:
+                    return msg.get("result", {}).get("result", {}).get("value")
+            return None
+
+        ws = _ws.create_connection(ws_url, timeout=60, suppress_origin=True)
+        snap_js = f"(function(){{var imgs=document.querySelectorAll({json.dumps(img_selector)}),srcs=[];for(var i=0;i<imgs.length;i++){{var s=imgs[i].currentSrc||imgs[i].src||'';if(s)srcs.push(s);}}return JSON.stringify(srcs);}})()"
+        snap_val = cdp_eval(ws, snap_js)
+        existing_srcs = set(json.loads(snap_val)) if snap_val else set()
+
+        full_prompt = "generate an image of: " + prompt
+        ws.send(
+            json.dumps(
+                {
+                    "id": msg_id[0],
+                    "method": "Input.insertText",
+                    "params": {"text": full_prompt},
+                }
+            )
+        )
+        ws.recv()
+        time.sleep(0.2)
+        for ev in ("keyDown", "keyUp"):
+            ws.send(
+                json.dumps(
+                    {
+                        "id": msg_id[0],
+                        "method": "Input.dispatchKeyEvent",
+                        "params": {
+                            "type": ev,
+                            "key": "Enter",
+                            "code": "Enter",
+                            "windowsVirtualKeyCode": 13,
+                            "nativeVirtualKeyCode": 13,
+                        },
+                    }
+                )
+            )
+            msg_id[0] += 1
+            ws.recv()
+
+        new_img = None
+        deadline = time.monotonic() + 60
+        while time.monotonic() < deadline:
+            time.sleep(2)
+            snap_val = cdp_eval(ws, snap_js)
+            if snap_val:
+                current = set(json.loads(snap_val))
+                new_urls = current - existing_srcs
+                if new_urls:
+                    new_img = list(new_urls)[0]
+                    break
+
+        if new_img:
+            js = f"""(function() {{
+                var img = document.querySelector('{img_selector}[src="{new_img}"]');
+                if (!img) return null;
+                var c = document.createElement('canvas');
+                c.width = img.naturalWidth; c.height = img.naturalHeight;
+                var ctx = c.getContext('2d');
+                ctx.drawImage(img, 0, 0);
+                return c.toDataURL('image/png');
+            }})()"""
+            data_url = cdp_eval(ws, js)
+            if data_url and data_url.startswith("data:image/png;base64,"):
+                import base64 as _b64
+
+                with open(output_path, "wb") as f:
+                    f.write(_b64.b64decode(data_url.split(",", 1)[1]))
+                ws.close()
+                return True
+
+        ws.close()
+        return False
+    except Exception as e:
+        print(f"  GeminiProxy error: {e}")
+        return False
+
+
+def _generate_cref_images(project_dir, image_style, image_model):
+    """Read CREF.txt and generate reference images for each character."""
+    import shutil
+
+    cref_path = os.path.join(project_dir, "CREF.txt")
+    if not os.path.exists(cref_path):
+        return
+
+    style_desc = STYLE_DESCRIPTIONS.get(image_style, STYLE_DESCRIPTIONS["Stick Figure"])
+    descriptions = {}
+    with open(cref_path, "r") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("=") or "CHARACTER REFERENCE" in line:
+                continue
+            parts = line.split("|", 1)
+            desc = parts[0].strip()
+            if not desc:
+                continue
+            name = desc.split(",")[0].strip()
+            if name:
+                descriptions[name] = desc
+
+    for char_name, description in descriptions.items():
+        if char_name.lower() == "filler":
+            continue
+        safe_name = re.sub(r"[^a-zA-Z0-9]", "_", char_name).lower()
+
+        if os.path.exists(os.path.join(project_dir, f"ref_{safe_name}.png")):
+            print(f"ref_{safe_name}.png already exists — skipping")
+            continue
+
+        print(f"Generating {char_name} via {image_model}...")
+        prompt = f"{style_desc}, {description}"
+        output_path = os.path.join(project_dir, f"ref_{safe_name}.png")
+
+        if image_model == "geminiproxy":
+            ok = _generate_image_geminiproxy(prompt, output_path)
+            if ok:
+                input_dir = "/home/henry/comfy/ComfyUI/input"
+                dst = os.path.join(input_dir, f"ref_{safe_name}.png")
+                if os.path.exists(output_path):
+                    shutil.copy2(output_path, dst)
+                    print(f"  Saved: {dst}")
+            else:
+                print(f"  GeminiProxy failed for {char_name}")
+        else:
+            if not _comfyui_available():
+                if not _start_comfyui():
+                    return
+
+            input_dir = "/home/henry/comfy/ComfyUI/input"
+
+            def _is_flux(m):
+                return "flux" in m.lower()
+
+            def _is_flux2(m):
+                return "flux2" in m.lower()
+
+            if _is_flux(image_model):
+                vae = (
+                    "flux2-vae.safetensors"
+                    if _is_flux2(image_model)
+                    else "ae.safetensors"
+                )
+                clip2 = (
+                    "mistral_3_small_flux2_bf16.safetensors"
+                    if _is_flux2(image_model)
+                    else "t5xxl_fp8_e4m3fn.safetensors"
+                )
+                workflow = {
+                    "1": {
+                        "class_type": "UNETLoader",
+                        "inputs": {
+                            "unet_name": image_model,
+                            "weight_dtype": "fp8_e4m3fn",
+                        },
+                    },
+                    "2": {
+                        "class_type": "DualCLIPLoader",
+                        "inputs": {
+                            "clip_name1": "clip_l.safetensors",
+                            "clip_name2": clip2,
+                            "type": "flux",
+                        },
+                    },
+                    "3": {"class_type": "VAELoader", "inputs": {"vae_name": vae}},
+                    "4": {
+                        "class_type": "CLIPTextEncode",
+                        "inputs": {"clip": ["2", 0], "text": prompt},
+                    },
+                    "5": {
+                        "class_type": "CLIPTextEncode",
+                        "inputs": {"clip": ["2", 0], "text": ""},
+                    },
+                    "6": {
+                        "class_type": "EmptySD3LatentImage",
+                        "inputs": {"width": 832, "height": 480, "batch_size": 1},
+                    },
+                    "7": {
+                        "class_type": "KSampler",
+                        "inputs": {
+                            "model": ["1", 0],
+                            "positive": ["4", 0],
+                            "negative": ["5", 0],
+                            "latent_image": ["6", 0],
+                            "cfg": 1,
+                            "denoise": 1,
+                            "seed": 12345,
+                            "steps": 20,
+                            "sampler_name": "euler",
+                            "scheduler": "simple",
+                        },
+                    },
+                    "8": {
+                        "class_type": "VAEDecode",
+                        "inputs": {"samples": ["7", 0], "vae": ["3", 0]},
+                    },
+                    "9": {
+                        "class_type": "SaveImage",
+                        "inputs": {
+                            "filename_prefix": f"ref_{safe_name}",
+                            "images": ["8", 0],
+                        },
+                    },
+                }
+            else:
+                workflow = {
+                    "3": {
+                        "class_type": "KSampler",
+                        "inputs": {
+                            "cfg": 2,
+                            "denoise": 1,
+                            "latent_image": ["5", 0],
+                            "model": ["4", 0],
+                            "negative": ["7", 0],
+                            "positive": ["6", 0],
+                            "sampler_name": "euler",
+                            "scheduler": "sgm_uniform",
+                            "seed": 12345,
+                            "steps": 30,
+                        },
+                    },
+                    "4": {
+                        "class_type": "CheckpointLoaderSimple",
+                        "inputs": {"ckpt_name": image_model},
+                    },
+                    "5": {
+                        "class_type": "EmptyLatentImage",
+                        "inputs": {"width": 832, "height": 480, "batch_size": 1},
+                    },
+                    "6": {
+                        "class_type": "CLIPTextEncode",
+                        "inputs": {"clip": ["4", 1], "text": prompt},
+                    },
+                    "7": {
+                        "class_type": "CLIPTextEncode",
+                        "inputs": {
+                            "clip": ["4", 1],
+                            "text": "blurry, deformed, ugly, scary, dark, violent, low quality, watermark, text",
+                        },
+                    },
+                    "8": {
+                        "class_type": "VAEDecode",
+                        "inputs": {"samples": ["3", 0], "vae": ["4", 2]},
+                    },
+                    "9": {
+                        "class_type": "SaveImage",
+                        "inputs": {
+                            "filename_prefix": f"ref_{safe_name}",
+                            "images": ["8", 0],
+                        },
+                    },
+                }
+
+            try:
+                resp = requests.post(f"{COMFYUI_URL}/prompt", json={"prompt": workflow})
+                data = resp.json()
+                if "error" in data:
+                    print(f"  Error: {data['error']}")
+                    continue
+                prompt_id = data["prompt_id"]
+                print(f"  Queued: {prompt_id}")
+                for attempt in range(60):
+                    time.sleep(3)
+                    history = requests.get(f"{COMFYUI_URL}/history/{prompt_id}").json()
+                    if prompt_id in history:
+                        outputs = history[prompt_id].get("outputs", {})
+                        for node_out in outputs.values():
+                            for img in node_out.get("images", []):
+                                src = os.path.join(
+                                    "/home/henry/comfy/ComfyUI/output", img["filename"]
+                                )
+                                dst = os.path.join(input_dir, f"ref_{safe_name}.png")
+                                dst_out = os.path.join(
+                                    project_dir, f"ref_{safe_name}.png"
+                                )
+                                if os.path.exists(src):
+                                    shutil.copy2(src, dst)
+                                    shutil.copy2(src, dst_out)
+                                    print(f"  Saved: {dst}")
+                        break
+                else:
+                    print(f"  Timeout waiting for {char_name}")
+            except Exception as e:
+                print(f"  Error: {e}")
+
 
 # Pipeline state for threaded runs
 class _PipelineState:
@@ -1716,6 +2068,21 @@ def stop_run():
 
 KEY_SERVICE_URL = "http://localhost:7755"
 KEY_SERVICE_SCRIPT = "/home/henry/APPS/Key/key_sender.py"
+
+
+def _cdp_restore_tab(cdp_port):
+    """Restore focus to the YTVideos web page after proxy communication."""
+    try:
+        resp = requests.get(f"http://localhost:{cdp_port}/json", timeout=3)
+        for t in resp.json():
+            if t.get("type") == "page" and "7070" in t.get("url", ""):
+                requests.get(
+                    f"http://localhost:{cdp_port}/json/activate/{t['id']}",
+                    timeout=3,
+                )
+                break
+    except Exception:
+        pass
 
 
 def _ensure_key_service():
@@ -3339,7 +3706,7 @@ def _generate_audio_and_assemble(project_dir, narration_path, voice_model, voice
 
 
 def _build_narration_prompt(title, story_type, sentence_count=30):
-    """Build the narration+prompts prompt text. Shared by all AI helpers."""
+    """Build the narration+prompts+CREF prompt text. Shared by all AI helpers."""
     story_type_display = story_type.replace("_", " ").title()
     return (
         f"Write a {sentence_count}-sentence {story_type_display} narration script for a "
@@ -3348,17 +3715,36 @@ def _build_narration_prompt(title, story_type, sentence_count=30):
         f"IMPORTANT: The very last sentence of the narration must always be a SINGLE CTA asking viewers "
         f"to like, share and subscribe. Limit this to exactly one sentence.\n\n"
         f"Then after the narration, write a section called [Prompts] and for EACH sentence above, "
-        f"list detailed image generation prompt. Each prompt should describe the scene vividly: "
+        f"write a detailed image generation prompt. Each prompt should describe the scene vividly: "
         f"setting, background, lighting, camera angle (close-up, wide shot, etc.), character positions, "
-        f"mood, and colors. "
-        f"One prompt per line, no numbering.\n\n"
+        f"mood, and colors. One prompt per line, no numbering.\n\n"
+        f"Then after the prompts, write a section called [CREF] and identify every recurring character "
+        f"in the story. For each character, provide a one-sentence visual description for AI image generation.\n\n"
+        f"Include: height/build, hair style/color, eye color, clothing style/color, and key accessories. "
+        f"If not specified in the text, infer details that fit the story's setting and mood.\n\n"
+        f"Format the CREF section as one character per line:\n"
+        f"Character Name, visual description sentence|reference_word1, reference_word2\n\n"
         f"Format your entire output as:\n"
-        f"<narration sentences>\n\n[Prompts]\n<prompt sentences>"
+        f"<narration sentences>\n\n"
+        f"[Prompts]\n"
+        f"<prompt sentences>\n\n"
+        f"[CREF]\n"
+        f"<cref lines>"
     )
 
 
-def _parse_narration_response(full_content, narration_path, rawprompt_path):
-    """Split AI response into narration and prompts, write files."""
+def _parse_narration_response(
+    full_content, narration_path, rawprompt_path, cref_path=None
+):
+    """Split AI response into narration, prompts, and CREF, write files."""
+    # Extract CREF section if present
+    cref_content = ""
+    if "[CREF]" in full_content:
+        parts = full_content.split("[CREF]", 1)
+        full_content = parts[0].strip()
+        cref_content = parts[1].strip()
+
+    # Extract prompts section
     if "[Prompts]" in full_content:
         parts = full_content.split("[Prompts]", 1)
         narration_content = parts[0].strip()
@@ -3372,15 +3758,22 @@ def _parse_narration_response(full_content, narration_path, rawprompt_path):
     if prompts_content:
         with open(rawprompt_path, "w") as f:
             f.write(prompts_content + "\n")
+    if cref_content and cref_path:
+        with open(cref_path, "w") as f:
+            f.write("CHARACTER REFERENCE (CREF)\n")
+            f.write("=" * 40 + "\n\n")
+            f.write(cref_content + "\n")
+            f.write("Filler,filler|\n")
 
 
 def _generate_narration(
     title, story_type, narration_path, ai_helper, project_dir=None, sentence_count=30
 ):
-    """Generate narration.txt and RawPrompt.txt using the configured AI helper. Returns prompt or raises."""
+    """Generate narration.txt, RawPrompt.txt, and CREF.txt using the configured AI helper. Returns prompt or raises."""
     prompt = _build_narration_prompt(title, story_type, sentence_count)
     project_dir = project_dir or os.path.dirname(narration_path)
     rawprompt_path = os.path.join(project_dir, "RawPrompt.txt")
+    cref_path = os.path.join(project_dir, "CREF.txt")
 
     if ai_helper == "claude":
         from datetime import datetime
@@ -3399,7 +3792,9 @@ def _generate_narration(
         full_content = resp.json().get("reply", "").strip()
         if not full_content:
             raise RuntimeError("key-service returned empty reply")
-        _parse_narration_response(full_content, narration_path, rawprompt_path)
+        _parse_narration_response(
+            full_content, narration_path, rawprompt_path, cref_path
+        )
         return prompt
 
     if ai_helper == "geminiproxy":
@@ -3510,7 +3905,9 @@ def _generate_narration(
         full_content = reply.strip()
         if not full_content:
             raise RuntimeError("GeminiProxy returned empty reply")
-        _parse_narration_response(full_content, narration_path, rawprompt_path)
+        _parse_narration_response(
+            full_content, narration_path, rawprompt_path, cref_path
+        )
         return prompt
 
     if ai_helper == "google":
@@ -3563,7 +3960,9 @@ def _generate_narration(
         full_content = response.text.strip()
         if not full_content:
             raise RuntimeError("Google returned empty reply")
-        _parse_narration_response(full_content, narration_path, rawprompt_path)
+        _parse_narration_response(
+            full_content, narration_path, rawprompt_path, cref_path
+        )
         return prompt
 
     # Proxy helpers delegate to _call_ai (CDP-based)
@@ -3577,7 +3976,9 @@ def _generate_narration(
         full_content = _call_ai(prompt, ai_helper, timeout=180)
         if not full_content:
             raise RuntimeError(f"{ai_helper} returned empty reply")
-        _parse_narration_response(full_content, narration_path, rawprompt_path)
+        _parse_narration_response(
+            full_content, narration_path, rawprompt_path, cref_path
+        )
         return prompt
 
     # Default: opencode
@@ -3603,7 +4004,7 @@ def _generate_narration(
     if not full_content:
         stderr = ansi_escape.sub("", result.stderr).strip()
         raise RuntimeError(stderr or "opencode returned empty output")
-    _parse_narration_response(full_content, narration_path, rawprompt_path)
+    _parse_narration_response(full_content, narration_path, rawprompt_path, cref_path)
     return prompt
 
 
@@ -3615,13 +4016,12 @@ def _run_pipeline(
     ai_helper,
     sentence_count=30,
     step_narration=True,
-    step_prep_cref=True,
     step_prompts=True,
     step_thumbnail=True,
     step_clips=True,
     step_assemble=True,
 ):
-    """Background thread: generate narration → prepare → prompts → video."""
+    """Background thread: generate narration → prompts → video."""
     p = _pipeline
     try:
         proj_cfg = {}
@@ -3648,19 +4048,24 @@ def _run_pipeline(
                     project_dir,
                     sentence_count,
                 )
-                p.push(f"Prompt → {prompt}")
                 p.push(f"✓ Narration created: {narration_path}", "success")
         else:
             p.push("⊘ Skipping Narration", "info")
 
-        # Step 2: Prep CREF
-        if step_prep_cref:
-            p.push("Running prepare script...")
-            run_prepare(narration_path)
+        # Step 2: Generate CREF reference images
+        cref_path = os.path.join(project_dir, "CREF.txt")
+        if os.path.exists(cref_path):
+            p.push("Generating CREF reference images...")
+            _generate_cref_images(
+                project_dir,
+                proj_cfg.get("image_style", "Stick Figure"),
+                proj_cfg.get("image_model", "geminiproxy"),
+            )
+            p.push("✓ CREF images done", "success")
         else:
-            p.push("⊘ Skipping Prep CREF", "info")
+            p.push("⊘ No CREF.txt found — skipping reference images", "info")
 
-        # Step 3: Prompts + CREF images
+        # Step 3: Prompts
         if step_prompts:
             p.push("Running prompts script...")
             run_prompts(narration_path)
@@ -3735,7 +4140,6 @@ def generate_narration():
     sentence_count = clip_count if clip_count and clip_count > 0 else 30
     narration_path = os.path.join(project_dir, "narration.txt")
     step_narration = config.get("step_narration", True)
-    step_prep_cref = config.get("step_prep_cref", True)
     step_prompts = config.get("step_prompts", True)
     step_thumbnail = config.get("step_thumbnail", True)
     step_clips = config.get("step_clips", True)
@@ -3754,7 +4158,6 @@ def generate_narration():
             ai_helper,
             sentence_count,
             step_narration,
-            step_prep_cref,
             step_prompts,
             step_thumbnail,
             step_clips,
@@ -4048,12 +4451,11 @@ def regenerate_cref():
 
     project_dir = os.path.join(VIDEOS_DIR, title)
     config_path = os.path.join(project_dir, "project.json")
-    image_model = "geminiproxy"
+    image_model = data.get("image_model", "geminiproxy")
     image_style = "Stick Figure"
     if os.path.exists(config_path):
         with open(config_path) as f:
             config = json.load(f)
-            image_model = config.get("image_model", "geminiproxy")
             image_style = config.get("image_style", "Stick Figure")
 
     style_desc = STYLE_DESCRIPTIONS.get(image_style, STYLE_DESCRIPTIONS["Stick Figure"])
@@ -4292,14 +4694,13 @@ def regenerate_clip():
             {"status": "error", "error": f"Failed to update prompts.txt: {e}"}
         )
 
-    # Load config to know which model and style to use
+    # Load config to know which style to use
     config_path = os.path.join(project_dir, "project.json")
-    image_model = "geminiproxy"
+    image_model = data.get("image_model", "geminiproxy")
     image_style = "Stick Figure"
     if os.path.exists(config_path):
         with open(config_path, "r") as f:
             config = json.load(f)
-            image_model = config.get("image_model", "geminiproxy")
             image_style = config.get("image_style", "Stick Figure")
 
     # Prepend style description if not already present
@@ -4448,11 +4849,16 @@ def save_description_api():
 def regenerate_thumbnail():
     data = request.json
     title = safe_title(data.get("title", ""))
-    image_model = data.get("image_model", "geminiproxy")
+    image_model = data.get("image_model")
     image_style = data.get("image_style", "")
     ai_helper = data.get("ai_helper", "")
+    print(
+        f"DEBUG regenerate_thumbnail: image_model={image_model}, image_style={image_style}"
+    )
     if not title:
         return jsonify({"status": "error", "error": "No title"})
+    if not image_model:
+        return jsonify({"status": "error", "error": "No image_model provided"})
     project_dir = os.path.join(VIDEOS_DIR, title)
     narration_path = os.path.join(project_dir, "narration.txt")
     if not os.path.exists(narration_path):
