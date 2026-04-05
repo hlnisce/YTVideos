@@ -197,6 +197,17 @@ def _call_ai(prompt, ai_helper, timeout=120):
             ws.close()
             refocus_web_app(cdp_port)
 
+    if ai_helper == "ollama_gemma":
+        import requests
+
+        resp = requests.post(
+            "http://localhost:11434/api/generate",
+            json={"model": "gemma4:e4b", "prompt": prompt, "stream": False},
+            timeout=timeout,
+        )
+        resp.raise_for_status()
+        return resp.json().get("response", "").strip()
+
     if ai_helper == "google":
         from google import genai
         from google.genai import types

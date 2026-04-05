@@ -90,6 +90,9 @@ def _call_ai(prompt, ai_helper, timeout=120):
         f.write(f"[{ts}] {ai_helper}: {safe_prompt}\n")
 
     if ai_helper == "claude":
+        import requests
+
+        _ensure_key_service()
         resp = requests.post(
             f"{KEY_SERVICE_URL}/tmux/chat",
             json={"text": f"claude: {prompt}", "timeout": timeout},
@@ -97,6 +100,17 @@ def _call_ai(prompt, ai_helper, timeout=120):
         )
         resp.raise_for_status()
         return resp.json().get("reply", "").strip()
+
+    if ai_helper == "ollama_gemma":
+        import requests
+
+        resp = requests.post(
+            "http://localhost:11434/api/generate",
+            json={"model": "gemma4:e4b", "prompt": prompt, "stream": False},
+            timeout=timeout,
+        )
+        resp.raise_for_status()
+        return resp.json().get("response", "").strip()
 
     if ai_helper == "geminiproxy":
         import websocket as _ws
@@ -583,7 +597,21 @@ def _generate_image_geminiproxy(prompt, output_path, image_style=None):
             return None
 
         ws = _ws.create_connection(ws_url, timeout=60, suppress_origin=True)
-        snap_js = f"(function(){{var imgs=document.querySelectorAll({json.dumps(img_selector)}),srcs=[];for(var i=0;i<imgs.length;i++){{var s=imgs[i].currentSrc||imgs[i].src||'';if(s)srcs.push(s);}}return JSON.stringify(srcs);}})()"
+        # Clear textbox utilizing proper CDP dispatch keys
+        focus_js = r"document.querySelector('textarea, [contenteditable=true], [role=textbox]')?.focus();"
+        cdp_eval(ws, focus_js)
+        time.sleep(0.2)
+        for key, code, vk in (("a", "KeyA", 65), ("Backspace", "Backspace", 8)):
+            mods = 2 if key == "a" else 0
+            for ev in ("keyDown", "keyUp"):
+                ws.send(json.dumps({"id": msg_id[0], "method": "Input.dispatchKeyEvent", "params": {
+                    "type": ev, "key": key, "code": code, "windowsVirtualKeyCode": vk, "nativeVirtualKeyCode": vk, "modifiers": mods
+                }}))
+                ws.recv()
+                msg_id[0] += 1
+        time.sleep(0.1)
+
+        snap_js = f"(function(){{var imgs=document.querySelectorAll({json.dumps(img_selector)}),srcs=[];for(var i=0;i<imgs.length;i++){{var s=imgs[i].currentSrc||imgs[i].src||imgs[i].getAttribute('src')||'';if(s&&imgs[i].complete&&imgs[i].naturalWidth>=100&&imgs[i].naturalHeight>=100)srcs.push(s);}}return JSON.stringify(srcs);}})()"
         snap_val = cdp_eval(ws, snap_js)
         existing_srcs = set(json.loads(snap_val)) if snap_val else set()
 
@@ -604,25 +632,28 @@ def _generate_image_geminiproxy(prompt, output_path, image_style=None):
             )
         )
         ws.recv()
-        time.sleep(0.2)
-        for ev in ("keyDown", "keyUp"):
-            ws.send(
-                json.dumps(
-                    {
-                        "id": msg_id[0],
-                        "method": "Input.dispatchKeyEvent",
-                        "params": {
-                            "type": ev,
-                            "key": "Enter",
-                            "code": "Enter",
-                            "windowsVirtualKeyCode": 13,
-                            "nativeVirtualKeyCode": 13,
-                        },
-                    }
-                )
-            )
-            msg_id[0] += 1
-            ws.recv()
+        time.sleep(0.5)
+
+        # Wait for Send button to be enabled (GeminiProxy may still be busy from prior request)
+        ready_deadline = time.monotonic() + 15
+        while time.monotonic() < ready_deadline:
+            ready = cdp_eval(ws, r"(function(){ var b=document.querySelector('button[aria-label*=\"Send\"]'); return (b && !b.disabled) ? 'yes' : 'no'; })()")
+            if ready == 'yes':
+                break
+            print("  GeminiProxy: waiting for Send button to be ready...", flush=True)
+            time.sleep(1)
+
+        # Submit with retry — verify input cleared as confirmation submit worked
+        submit_js = r"(function() { var b = document.querySelector('button[aria-label*=\"Send\"], button[data-testid*=\"send\"]'); if(b && !b.disabled) { b.click(); return 'click'; } var el = document.querySelector('rich-textarea textarea, [contenteditable=true], [role=textbox]'); if(el) { el.focus(); el.dispatchEvent(new KeyboardEvent('keydown', {key:'Enter',code:'Enter',keyCode:13,bubbles:true,cancelable:true})); el.dispatchEvent(new KeyboardEvent('keypress', {key:'Enter',code:'Enter',keyCode:13,bubbles:true,cancelable:true})); el.dispatchEvent(new KeyboardEvent('keyup', {key:'Enter',code:'Enter',keyCode:13,bubbles:true})); return 'key'; } return 'none'; })()"
+        check_input_js = r"(function(){ var el=document.querySelector('rich-textarea textarea, [contenteditable=true], [role=textbox]'); return el ? (el.value||el.innerText||el.textContent||'').trim() : ''; })()"
+        for attempt in range(3):
+            cdp_eval(ws, submit_js)
+            time.sleep(1.5)
+            remaining = cdp_eval(ws, check_input_js)
+            if not remaining:
+                break
+            print(f"  GeminiProxy: submit attempt {attempt + 1} input not cleared, retrying", flush=True)
+            time.sleep(1)
 
         new_img = None
         deadline = time.monotonic() + 60
@@ -637,21 +668,36 @@ def _generate_image_geminiproxy(prompt, output_path, image_style=None):
                     break
 
         if new_img:
-            js = f"""(function() {{
-                var img = document.querySelector('{img_selector}[src="{new_img}"]');
-                if (!img) return null;
-                var c = document.createElement('canvas');
-                c.width = img.naturalWidth; c.height = img.naturalHeight;
-                var ctx = c.getContext('2d');
-                ctx.drawImage(img, 0, 0);
-                return c.toDataURL('image/png');
-            }})()"""
-            data_url = cdp_eval(ws, js)
-            if data_url and data_url.startswith("data:image/png;base64,"):
+            rect_val = cdp_eval(ws, f"""(function() {{
+                var imgs = document.querySelectorAll({json.dumps(img_selector)});
+                var img = null;
+                for (var i = imgs.length - 1; i >= 0; i--) {{
+                    if ((imgs[i].currentSrc || imgs[i].src || '') === {json.dumps(new_img)}) {{ img = imgs[i]; break; }}
+                }}
+                if (!img) img = imgs[imgs.length - 1];
+                img.scrollIntoView({{block:'center'}});
+                var r = img.getBoundingClientRect();
+                var dpr = window.devicePixelRatio || 1;
+                var nw = img.naturalWidth || r.width;
+                return JSON.stringify({{x:r.left, y:r.top, width:r.width, height:r.height, scale:Math.max(dpr, nw/r.width)}});
+            }})()""")
+            if not rect_val:
+                return False
+            time.sleep(0.4)
+            rect = json.loads(rect_val)
+            pid = msg_id[0]
+            msg_id[0] += 1
+            ws.send(json.dumps({"id": pid, "method": "Page.captureScreenshot", "params": {"format": "png", "clip": {"x": max(0, rect["x"]), "y": max(0, rect["y"]), "width": rect["width"], "height": rect["height"], "scale": rect["scale"]}}}))
+            screenshot_data = None
+            for _ in range(2000):
+                msg = json.loads(ws.recv())
+                if msg.get("id") == pid:
+                    screenshot_data = msg.get("result", {}).get("data")
+                    break
+            if screenshot_data:
                 import base64 as _b64
-
                 with open(output_path, "wb") as f:
-                    f.write(_b64.b64decode(data_url.split(",", 1)[1]))
+                    f.write(_b64.b64decode(screenshot_data))
                 return True
 
         return False

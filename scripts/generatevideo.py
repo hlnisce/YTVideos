@@ -482,8 +482,22 @@ def generate_image_clip_geminiproxy(prompt_text, clip_number, output_dir):
 
         ws = _ws.create_connection(ws_url, timeout=60, suppress_origin=True)
 
+        # Clear textbox utilizing proper CDP dispatch keys
+        focus_js = r"document.querySelector('textarea, [contenteditable=true], [role=textbox]')?.focus();"
+        cdp_eval(ws, focus_js)
+        time.sleep(0.2)
+        for key, code, vk in (("a", "KeyA", 65), ("Backspace", "Backspace", 8)):
+            mods = 2 if key == "a" else 0
+            for ev in ("keyDown", "keyUp"):
+                ws.send(json.dumps({"id": msg_id[0], "method": "Input.dispatchKeyEvent", "params": {
+                    "type": ev, "key": key, "code": code, "windowsVirtualKeyCode": vk, "nativeVirtualKeyCode": vk, "modifiers": mods
+                }}))
+                ws.recv()
+                msg_id[0] += 1
+        time.sleep(0.1)
+
         # Snapshot existing image srcs before sending
-        snap_js = f"(function(){{var imgs=document.querySelectorAll({json.dumps(img_selector)}),srcs=[];for(var i=0;i<imgs.length;i++){{var s=imgs[i].currentSrc||imgs[i].src||'';if(s)srcs.push(s);}}return JSON.stringify(srcs);}})()"
+        snap_js = f"(function(){{var imgs=document.querySelectorAll({json.dumps(img_selector)}),srcs=[];for(var i=0;i<imgs.length;i++){{var s=imgs[i].currentSrc||imgs[i].src||imgs[i].getAttribute('src')||'';if(s&&imgs[i].complete&&imgs[i].naturalWidth>=100&&imgs[i].naturalHeight>=100)srcs.push(s);}}return JSON.stringify(srcs);}})()"
         snap_val = cdp_eval(ws, snap_js)
         existing_srcs = set(json.loads(snap_val)) if snap_val else set()
         print(f"  Existing images before prompt: {len(existing_srcs)}", flush=True)
@@ -500,26 +514,28 @@ def generate_image_clip_geminiproxy(prompt_text, clip_number, output_dir):
         )
         ws.recv()
         msg_id[0] += 1
-        time.sleep(0.2)
+        time.sleep(0.5)
 
-        for ev in ("keyDown", "keyUp"):
-            ws.send(
-                json.dumps(
-                    {
-                        "id": msg_id[0],
-                        "method": "Input.dispatchKeyEvent",
-                        "params": {
-                            "type": ev,
-                            "key": "Enter",
-                            "code": "Enter",
-                            "windowsVirtualKeyCode": 13,
-                            "nativeVirtualKeyCode": 13,
-                        },
-                    }
-                )
-            )
-            ws.recv()
-            msg_id[0] += 1
+        # Wait for Send button to be enabled (GeminiProxy may still be busy from prior request)
+        ready_deadline = time.monotonic() + 15
+        while time.monotonic() < ready_deadline:
+            ready = cdp_eval(ws, r"(function(){ var b=document.querySelector('button[aria-label*=\"Send\"]'); return (b && !b.disabled) ? 'yes' : 'no'; })()")
+            if ready == 'yes':
+                break
+            print("  GeminiProxy: waiting for Send button to be ready...", flush=True)
+            time.sleep(1)
+
+        # Submit with retry — verify input cleared as confirmation submit worked
+        submit_js = r"(function() { var b = document.querySelector('button[aria-label*=\"Send\"], button[data-testid*=\"send\"]'); if(b && !b.disabled) { b.click(); return 'click'; } var el = document.querySelector('rich-textarea textarea, [contenteditable=true], [role=textbox]'); if(el) { el.focus(); el.dispatchEvent(new KeyboardEvent('keydown', {key:'Enter',code:'Enter',keyCode:13,bubbles:true,cancelable:true})); el.dispatchEvent(new KeyboardEvent('keypress', {key:'Enter',code:'Enter',keyCode:13,bubbles:true,cancelable:true})); el.dispatchEvent(new KeyboardEvent('keyup', {key:'Enter',code:'Enter',keyCode:13,bubbles:true})); return 'key'; } return 'none'; })()"
+        check_input_js = r"(function(){ var el=document.querySelector('rich-textarea textarea, [contenteditable=true], [role=textbox]'); return el ? (el.value||el.innerText||el.textContent||'').trim() : ''; })()"
+        for attempt in range(3):
+            cdp_eval(ws, submit_js)
+            time.sleep(1.5)
+            remaining = cdp_eval(ws, check_input_js)
+            if not remaining:
+                break
+            print(f"  GeminiProxy: submit attempt {attempt + 1} input not cleared, retrying", flush=True)
+            time.sleep(1)
 
         # Poll for new image
         img_src = None

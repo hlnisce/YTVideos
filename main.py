@@ -33,7 +33,7 @@ def refocus_web_app(cdp_port=9222):
 app = Flask(__name__)
 
 VIDEOS_DIR = "/home/henry/APPS/YTVideos/videos"
-VERSION = "v4.86"
+VERSION = "v4.89"
 
 STYLE_DESCRIPTIONS = {
     "3D Render": "Clean, modern 3D CGI render. Smooth surfaces, precise geometry, studio-quality lighting with soft shadows. Polished and professional digital art look.",
@@ -116,7 +116,7 @@ HTML = r"""
         .log-info { color: #0f0; }
         .log-error { color: #f55; }
         .log-success { color: #5f5; }
-        h1 { color: #333; font-size: 20px; margin: 0 0 8px 0; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+        h1 { margin-bottom: 20px; font-size: 20px; color: #333; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
         .btn { padding: 6px 14px; font-size: 13px; cursor: pointer; background: #007bff; color: white; border: none; border-radius: 4px; }
         .btn:hover { background: #0056b3; }
         .tab-bar { display: flex; gap: 0; border-bottom: 2px solid #ccc; margin-bottom: 0; align-items: flex-end; }
@@ -169,9 +169,9 @@ HTML = r"""
 <body>
     <div class="container">
         <div class="main-panel">
-             <h1>🎬 Video Generator <span style="font-size:13px; color:#888; font-weight:normal;">{{ version }}</span>
+             <h1>🎬 VideoGen <span style="font-size:13px; color:#888; font-weight:normal;">{{ version }}</span>
                 <button class="btn" id="runBtn" onclick="handleRunStop()" style="background: #28a745;">▶️ Run</button>
-                <button class="btn" onclick="resetProject()" style="background: #dc3545;">🗑️ Reset</button>
+                <button class="btn" onclick="resetProject()" style="background: #dc3545;" title="Reset Project">🗑️</button>
                 <select id="projectSelect" onchange="loadProject()" style="padding: 5px 8px; font-size: 13px;">
                     <option value="">-- Select Project --</option>
                 </select>
@@ -179,6 +179,7 @@ HTML = r"""
                 <button class="btn" onclick="checkComfyQueue()" style="background: #6c757d; font-size:12px; padding: 5px 10px;" title="Check ComfyUI Queue">Confy</button>
                 <select id="ai_helper" style="padding:5px 8px; font-size:12px; border-radius:4px; border:1px solid #ccc;">
                     <option value="opencode">OpenCode</option>
+                    <option value="ollama_gemma">Local: Gemma 4 (Ollama)</option>
                     <option value="claude">Claude</option>
                     <option value="copilotproxy">CopilotProxy</option>
                     <option value="deepseekproxy">DeepSeekProxy</option>
@@ -1713,8 +1714,21 @@ def _generate_image_geminiproxy(prompt, output_path, image_style=None):
                     return msg.get("result", {}).get("result", {}).get("value")
             return None
 
-        ws = _ws.create_connection(ws_url, timeout=60, suppress_origin=True)
-        snap_js = f"(function(){{var imgs=document.querySelectorAll({json.dumps(img_selector)}),srcs=[];for(var i=0;i<imgs.length;i++){{var s=imgs[i].currentSrc||imgs[i].src||'';if(s)srcs.push(s);}}return JSON.stringify(srcs);}})()"
+        # Clear textbox utilizing proper CDP dispatch keys
+        focus_js = r"document.querySelector('textarea, [contenteditable=true], [role=textbox]')?.focus();"
+        cdp_eval(ws, focus_js)
+        time.sleep(0.2)
+        for key, code, vk in (("a", "KeyA", 65), ("Backspace", "Backspace", 8)):
+            mods = 2 if key == "a" else 0
+            for ev in ("keyDown", "keyUp"):
+                ws.send(json.dumps({"id": msg_id[0], "method": "Input.dispatchKeyEvent", "params": {
+                    "type": ev, "key": key, "code": code, "windowsVirtualKeyCode": vk, "nativeVirtualKeyCode": vk, "modifiers": mods
+                }}))
+                ws.recv()
+                msg_id[0] += 1
+        time.sleep(0.1)
+
+        snap_js = f"(function(){{var imgs=document.querySelectorAll({json.dumps(img_selector)}),srcs=[];for(var i=0;i<imgs.length;i++){{var s=imgs[i].currentSrc||imgs[i].src||imgs[i].getAttribute('src')||'';if(s&&imgs[i].complete&&imgs[i].naturalWidth>=100&&imgs[i].naturalHeight>=100)srcs.push(s);}}return JSON.stringify(srcs);}})()"
         snap_val = cdp_eval(ws, snap_js)
         existing_srcs = set(json.loads(snap_val)) if snap_val else set()
 
@@ -1735,25 +1749,28 @@ def _generate_image_geminiproxy(prompt, output_path, image_style=None):
             )
         )
         ws.recv()
-        time.sleep(0.2)
-        for ev in ("keyDown", "keyUp"):
-            ws.send(
-                json.dumps(
-                    {
-                        "id": msg_id[0],
-                        "method": "Input.dispatchKeyEvent",
-                        "params": {
-                            "type": ev,
-                            "key": "Enter",
-                            "code": "Enter",
-                            "windowsVirtualKeyCode": 13,
-                            "nativeVirtualKeyCode": 13,
-                        },
-                    }
-                )
-            )
-            msg_id[0] += 1
-            ws.recv()
+        time.sleep(0.5)
+
+        # Wait for Send button to be enabled (GeminiProxy may still be busy from prior request)
+        ready_deadline = time.monotonic() + 15
+        while time.monotonic() < ready_deadline:
+            ready = cdp_eval(ws, r"(function(){ var b=document.querySelector('button[aria-label*=\"Send\"]'); return (b && !b.disabled) ? 'yes' : 'no'; })()")
+            if ready == 'yes':
+                break
+            print("  GeminiProxy: waiting for Send button to be ready...", flush=True)
+            time.sleep(1)
+
+        # Submit with retry — verify input cleared as confirmation submit worked
+        submit_js = r"(function() { var b = document.querySelector('button[aria-label*=\"Send\"], button[data-testid*=\"send\"]'); if(b && !b.disabled) { b.click(); return 'click'; } var el = document.querySelector('rich-textarea textarea, [contenteditable=true], [role=textbox]'); if(el) { el.focus(); el.dispatchEvent(new KeyboardEvent('keydown', {key:'Enter',code:'Enter',keyCode:13,bubbles:true,cancelable:true})); el.dispatchEvent(new KeyboardEvent('keypress', {key:'Enter',code:'Enter',keyCode:13,bubbles:true,cancelable:true})); el.dispatchEvent(new KeyboardEvent('keyup', {key:'Enter',code:'Enter',keyCode:13,bubbles:true})); return 'key'; } return 'none'; })()"
+        check_input_js = r"(function(){ var el=document.querySelector('rich-textarea textarea, [contenteditable=true], [role=textbox]'); return el ? (el.value||el.innerText||el.textContent||'').trim() : ''; })()"
+        for attempt in range(3):
+            cdp_eval(ws, submit_js)
+            time.sleep(1.5)
+            remaining = cdp_eval(ws, check_input_js)
+            if not remaining:
+                break
+            print(f"  GeminiProxy: submit attempt {attempt + 1} input not cleared, retrying", flush=True)
+            time.sleep(1)
 
         new_img = None
         deadline = time.monotonic() + 60
@@ -1768,22 +1785,38 @@ def _generate_image_geminiproxy(prompt, output_path, image_style=None):
                     break
 
         if new_img:
-            js = f"""(function() {{
-                var img = document.querySelector('{img_selector}[src="{new_img}"]');
-                if (!img) return null;
-                var c = document.createElement('canvas');
-                c.width = img.naturalWidth; c.height = img.naturalHeight;
-                var ctx = c.getContext('2d');
-                ctx.drawImage(img, 0, 0);
-                return c.toDataURL('image/png');
-            }})()"""
-            data_url = cdp_eval(ws, js)
+            rect_val = cdp_eval(ws, f"""(function() {{
+                var imgs = document.querySelectorAll({json.dumps(img_selector)});
+                var img = null;
+                for (var i = imgs.length - 1; i >= 0; i--) {{
+                    if ((imgs[i].currentSrc || imgs[i].src || '') === {json.dumps(new_img)}) {{ img = imgs[i]; break; }}
+                }}
+                if (!img) img = imgs[imgs.length - 1];
+                img.scrollIntoView({{block:'center'}});
+                var r = img.getBoundingClientRect();
+                var dpr = window.devicePixelRatio || 1;
+                var nw = img.naturalWidth || r.width;
+                return JSON.stringify({{x:r.left, y:r.top, width:r.width, height:r.height, scale:Math.max(dpr, nw/r.width)}});
+            }})()""")
+            if not rect_val:
+                ws.close()
+                return False
+            time.sleep(0.4)
+            rect = json.loads(rect_val)
+            pid = msg_id[0]
+            msg_id[0] += 1
+            ws.send(json.dumps({"id": pid, "method": "Page.captureScreenshot", "params": {"format": "png", "clip": {"x": max(0, rect["x"]), "y": max(0, rect["y"]), "width": rect["width"], "height": rect["height"], "scale": rect["scale"]}}}))
+            screenshot_data = None
+            for _ in range(2000):
+                msg = json.loads(ws.recv())
+                if msg.get("id") == pid:
+                    screenshot_data = msg.get("result", {}).get("data")
+                    break
             try:
-                if data_url and data_url.startswith("data:image/png;base64,"):
+                if screenshot_data:
                     import base64 as _b64
-
                     with open(output_path, "wb") as f:
-                        f.write(_b64.b64decode(data_url.split(",", 1)[1]))
+                        f.write(_b64.b64decode(screenshot_data))
                     return True
                 return False
             finally:
@@ -2148,6 +2181,15 @@ def _call_ai(prompt, ai_helper, timeout=120):
     safe_prompt = prompt.replace("\n", " ").replace("\r", " ")
     with open(APP_PROMPT_LOG, "a") as f:
         f.write(f"[{ts}] {ai_helper}: {safe_prompt}\n")
+
+    if ai_helper == "ollama_gemma":
+        resp = requests.post(
+            "http://localhost:11434/api/generate",
+            json={"model": "gemma4:e4b", "prompt": prompt, "stream": False},
+            timeout=timeout,
+        )
+        resp.raise_for_status()
+        return resp.json().get("response", "").strip()
 
     if ai_helper == "claude":
         _ensure_key_service()
@@ -3255,8 +3297,21 @@ def _generate_thumbnail_image_geminiproxy(prompt, output_path, image_style=None)
                     return msg.get("result", {}).get("result", {}).get("value")
             return None
 
-        ws = _ws.create_connection(ws_url, timeout=60, suppress_origin=True)
-        snap_js = f"(function(){{var imgs=document.querySelectorAll({json.dumps(img_selector)}),srcs=[];for(var i=0;i<imgs.length;i++){{var s=imgs[i].currentSrc||imgs[i].src||'';if(s)srcs.push(s);}}return JSON.stringify(srcs);}})()"
+        # Clear textbox utilizing proper CDP dispatch keys
+        focus_js = r"document.querySelector('textarea, [contenteditable=true], [role=textbox]')?.focus();"
+        cdp_eval(ws, focus_js)
+        time.sleep(0.2)
+        for key, code, vk in (("a", "KeyA", 65), ("Backspace", "Backspace", 8)):
+            mods = 2 if key == "a" else 0
+            for ev in ("keyDown", "keyUp"):
+                ws.send(json.dumps({"id": msg_id[0], "method": "Input.dispatchKeyEvent", "params": {
+                    "type": ev, "key": key, "code": code, "windowsVirtualKeyCode": vk, "nativeVirtualKeyCode": vk, "modifiers": mods
+                }}))
+                ws.recv()
+                msg_id[0] += 1
+        time.sleep(0.1)
+
+        snap_js = f"(function(){{var imgs=document.querySelectorAll({json.dumps(img_selector)}),srcs=[];for(var i=0;i<imgs.length;i++){{var s=imgs[i].currentSrc||imgs[i].src||imgs[i].getAttribute('src')||'';if(s&&imgs[i].complete&&imgs[i].naturalWidth>=100&&imgs[i].naturalHeight>=100)srcs.push(s);}}return JSON.stringify(srcs);}})()"
         snap_val = cdp_eval(ws, snap_js)
         existing_srcs = set(json.loads(snap_val)) if snap_val else set()
 
@@ -3288,25 +3343,28 @@ def _generate_thumbnail_image_geminiproxy(prompt, output_path, image_style=None)
         )
         ws.recv()
         msg_id[0] += 1
-        time.sleep(0.2)
-        for ev in ("keyDown", "keyUp"):
-            ws.send(
-                json.dumps(
-                    {
-                        "id": msg_id[0],
-                        "method": "Input.dispatchKeyEvent",
-                        "params": {
-                            "type": ev,
-                            "key": "Enter",
-                            "code": "Enter",
-                            "windowsVirtualKeyCode": 13,
-                            "nativeVirtualKeyCode": 13,
-                        },
-                    }
-                )
-            )
-            ws.recv()
-            msg_id[0] += 1
+        time.sleep(0.5)
+
+        # Wait for Send button to be enabled (GeminiProxy may still be busy from prior request)
+        ready_deadline = time.monotonic() + 15
+        while time.monotonic() < ready_deadline:
+            ready = cdp_eval(ws, r"(function(){ var b=document.querySelector('button[aria-label*=\"Send\"]'); return (b && !b.disabled) ? 'yes' : 'no'; })()")
+            if ready == 'yes':
+                break
+            print("  GeminiProxy: waiting for Send button to be ready...", flush=True)
+            time.sleep(1)
+
+        # Submit with retry — verify input cleared as confirmation submit worked
+        submit_js = r"(function() { var b = document.querySelector('button[aria-label*=\"Send\"], button[data-testid*=\"send\"]'); if(b && !b.disabled) { b.click(); return 'click'; } var el = document.querySelector('rich-textarea textarea, [contenteditable=true], [role=textbox]'); if(el) { el.focus(); el.dispatchEvent(new KeyboardEvent('keydown', {key:'Enter',code:'Enter',keyCode:13,bubbles:true,cancelable:true})); el.dispatchEvent(new KeyboardEvent('keypress', {key:'Enter',code:'Enter',keyCode:13,bubbles:true,cancelable:true})); el.dispatchEvent(new KeyboardEvent('keyup', {key:'Enter',code:'Enter',keyCode:13,bubbles:true})); return 'key'; } return 'none'; })()"
+        check_input_js = r"(function(){ var el=document.querySelector('rich-textarea textarea, [contenteditable=true], [role=textbox]'); return el ? (el.value||el.innerText||el.textContent||'').trim() : ''; })()"
+        for attempt in range(3):
+            cdp_eval(ws, submit_js)
+            time.sleep(1.5)
+            remaining = cdp_eval(ws, check_input_js)
+            if not remaining:
+                break
+            print(f"  GeminiProxy: submit attempt {attempt + 1} input not cleared, retrying", flush=True)
+            time.sleep(1)
 
         img_src = None
         deadline = time.monotonic() + 120
@@ -3506,7 +3564,7 @@ def _generate_thumbnail_and_metadata(
             with open(os.path.join(thumb_dir, "project.json"), "w") as _f:
                 json.dump(thumb_cfg, _f, indent=2)
             with open(os.path.join(thumb_dir, "prompts.txt"), "w") as f:
-                f.write(f"Prompt 1: {image_prompt}|||{title}\n\n")
+                f.write(f"{image_prompt}|||{title}\n\n")
             run_script(
                 [
                     "python",
@@ -3924,6 +3982,28 @@ def _generate_narration(
     project_dir = project_dir or os.path.dirname(narration_path)
     rawprompt_path = os.path.join(project_dir, "RawPrompt.txt")
     cref_path = os.path.join(project_dir, "CREF.txt")
+
+    if ai_helper == "ollama_gemma":
+        from datetime import datetime
+
+        ts = datetime.now().strftime("%H:%M:%S")
+        safe_prompt = prompt.replace("\n", " ").replace("\r", " ")
+        with open(APP_PROMPT_LOG, "a") as f:
+            f.write(f"[{ts}] {ai_helper}: {safe_prompt}\n")
+
+        resp = requests.post(
+            "http://localhost:11434/api/generate",
+            json={"model": "gemma4:e4b", "prompt": prompt, "stream": False},
+            timeout=180,
+        )
+        resp.raise_for_status()
+        full_content = resp.json().get("response", "").strip()
+        if not full_content:
+            raise RuntimeError(f"{ai_helper} returned empty reply")
+        _parse_narration_response(
+            full_content, narration_path, rawprompt_path, cref_path, image_style
+        )
+        return prompt
 
     if ai_helper == "claude":
         from datetime import datetime
