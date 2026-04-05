@@ -3737,27 +3737,47 @@ def _build_narration_prompt(title, story_type, sentence_count=30):
         f"If not specified in the text, infer details that fit the story's setting and mood.\n\n"
         f"Format the CREF section as one character per line:\n"
         f"Character Name, visual description sentence|reference_word1, reference_word2\n\n"
+        f"Then as a Prompt Engineer you have to rewrite the prompts for each CREF character."
+        f"Rules:"
+        f"Replace the generic subject in the prompt(e.g., 'a woman','he','she', etc.) with the Character Name and Character description."
+        f"Incorporate the character's visual traits (hair, clothing, eyes) into the prompt naturally."
+        f"DO NOT change the camera angle, lighting, background, or mood of the original prompt."
+        f"Keep everything else exactly the same — do not add, remove, or rephrase anything else.\n\n"
+        f"Number each rewritten prompt starting from 1.\n\n"
         f"Format your entire output as:\n"
         f"<narration sentences>\n\n"
         f"[Prompts]\n"
         f"<prompt sentences>\n\n"
         f"[CREF]\n"
-        f"<cref lines>"
+        f"<cref lines>\n\n"
+        f"[RP]\n"
+        f"Prompt 1: <rewritten prompt for sentence 1>\n"
+        f"Prompt 2: <rewritten prompt for sentence 2>\n"
+        f"...\n"
     )
 
 
 def _parse_narration_response(
     full_content, narration_path, rawprompt_path, cref_path=None
 ):
-    """Split AI response into narration, prompts, and CREF, write files."""
-    # Extract CREF section if present
+    """Split AI response into narration, prompts, CREF, and RP sections, write files."""
+    # Extract sections by known markers
     cref_content = ""
+    rp_content = ""
+
+    # Split out [RP] section first (appears after [CREF])
+    if "[RP]" in full_content:
+        parts = full_content.split("[RP]", 1)
+        full_content = parts[0].strip()
+        rp_content = parts[1].strip()
+
+    # Split out [CREF] section
     if "[CREF]" in full_content:
         parts = full_content.split("[CREF]", 1)
         full_content = parts[0].strip()
         cref_content = parts[1].strip()
 
-    # Extract prompts section
+    # Split out [Prompts] section
     if "[Prompts]" in full_content:
         parts = full_content.split("[Prompts]", 1)
         narration_content = parts[0].strip()
@@ -3777,6 +3797,28 @@ def _parse_narration_response(
             f.write("=" * 40 + "\n\n")
             f.write(cref_content + "\n")
             f.write("Filler,filler|\n")
+    if rp_content:
+        rp_path = os.path.join(os.path.dirname(narration_path), "prompts.txt")
+        rp_lines = [l.strip() for l in rp_content.split("\n") if l.strip()]
+        # Read narration sentences to pair with each prompt
+        narration_sentences = []
+        if os.path.exists(narration_path):
+            with open(narration_path) as nf:
+                narration_sentences = [l.strip() for l in nf if l.strip()]
+        with open(rp_path, "w") as f:
+            f.write("Video Generation Prompts\n")
+            f.write("=" * 40 + "\n\n")
+            for i, line in enumerate(rp_lines, 1):
+                # Strip any existing numbering (e.g. "1. ", "Prompt 1: ", etc.)
+                cleaned = re.sub(
+                    r"^(?:Prompt\s*\d+[\.\:]\s*)?(?:\d+[\.\)]\s*)?", "", line
+                )
+                sentence = (
+                    narration_sentences[i - 1]
+                    if i - 1 < len(narration_sentences)
+                    else ""
+                )
+                f.write(f"Prompt {i}: {cleaned}|||{sentence}\n\n")
 
 
 def _generate_narration(
@@ -4018,6 +4060,10 @@ def _generate_narration(
         stderr = ansi_escape.sub("", result.stderr).strip()
         raise RuntimeError(stderr or "opencode returned empty output")
     _parse_narration_response(full_content, narration_path, rawprompt_path, cref_path)
+    if not os.path.exists(narration_path) or os.path.getsize(narration_path) == 0:
+        raise RuntimeError(
+            "opencode did not create narration.txt — check output format"
+        )
     return prompt
 
 

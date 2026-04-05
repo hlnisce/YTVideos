@@ -500,9 +500,7 @@ def generate_prompts_file(
     else:
         source_lines = narration_lines
 
-    source_lines = rewrite_prompts_with_character_names(
-        source_lines, character_descriptions, ai_helper, narration_lines
-    )
+    # Skip AI rewrite — prompts already include character details from Step 1
 
     with open(prompts_path, "w") as f:
         f.write("Video Generation Prompts\n")
