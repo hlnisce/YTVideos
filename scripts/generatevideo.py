@@ -496,11 +496,9 @@ def generate_image_clip_geminiproxy(prompt_text, clip_number, output_dir):
                 msg_id[0] += 1
         time.sleep(0.1)
 
-        # Snapshot existing image srcs before sending
-        snap_js = f"(function(){{var imgs=document.querySelectorAll({json.dumps(img_selector)}),srcs=[];for(var i=0;i<imgs.length;i++){{var s=imgs[i].currentSrc||imgs[i].src||imgs[i].getAttribute('src')||'';if(s&&imgs[i].complete&&imgs[i].naturalWidth>=100&&imgs[i].naturalHeight>=100)srcs.push(s);}}return JSON.stringify(srcs);}})()"
-        snap_val = cdp_eval(ws, snap_js)
-        existing_srcs = set(json.loads(snap_val)) if snap_val else set()
-        print(f"  Existing images before prompt: {len(existing_srcs)}", flush=True)
+        count_js = f"document.querySelectorAll({json.dumps(img_selector)}).length"
+        existing_count = int(cdp_eval(ws, count_js) or 0)
+        print(f"  Existing images before prompt: {existing_count}", flush=True)
 
         full_prompt = "generate an image of: " + prompt_text
         ws.send(
@@ -537,50 +535,38 @@ def generate_image_clip_geminiproxy(prompt_text, clip_number, output_dir):
             print(f"  GeminiProxy: submit attempt {attempt + 1} input not cleared, retrying", flush=True)
             time.sleep(1)
 
-        # Poll for new image
-        img_src = None
-        deadline = time.monotonic() + 120
-        existing_srcs_list = list(existing_srcs)
-        time.sleep(10)
-        while time.monotonic() < deadline:
-            poll_js = f"""(function() {{
-                var known = new Set({json.dumps(existing_srcs_list)});
-                var imgs = document.querySelectorAll({json.dumps(img_selector)});
-                for (var i = 0; i < imgs.length; i++) {{
-                    var img = imgs[i];
-                    var src = img.currentSrc || img.src || img.getAttribute('src') || '';
-                    if (src && !known.has(src) && img.complete && img.naturalWidth >= 100 && img.naturalHeight >= 100)
-                        return src;
-                }}
-                return null;
-            }})()"""
-            val = cdp_eval(ws, poll_js)
-            if val:
-                img_src = val
-                print(f"  Found image: {img_src[:80]}", flush=True)
+        # Poll until image count increases
+        found = False
+        poll_deadline = time.monotonic() + 120
+        while time.monotonic() < poll_deadline:
+            time.sleep(2)
+            new_count = int(cdp_eval(ws, count_js) or 0)
+            if new_count > existing_count:
+                print(f"  GeminiProxy: new image detected ({existing_count} -> {new_count})", flush=True)
+                found = True
                 break
-            time.sleep(5)
+        time.sleep(0.5)
 
-        if not img_src:
+        if not found:
             ws.close()
             print(f"  GeminiProxy: timed out waiting for image")
             return None
 
         # Screenshot the image element via CDP
-        rect_js = f"""(function() {{
+        rect_val = cdp_eval(ws, f"""(function() {{
             var imgs = document.querySelectorAll({json.dumps(img_selector)});
-            var img = null;
-            for (var i = imgs.length - 1; i >= 0; i--) {{
-                if ((imgs[i].currentSrc || imgs[i].src || '') === {json.dumps(img_src)}) {{ img = imgs[i]; break; }}
-            }}
-            if (!img) img = imgs[imgs.length - 1];
+            var img = imgs[imgs.length - 1];
+            if (!img) return null;
             img.scrollIntoView({{block:'center'}});
             var r = img.getBoundingClientRect();
             var dpr = window.devicePixelRatio || 1;
             var nw = img.naturalWidth || r.width;
             return JSON.stringify({{x:r.left, y:r.top, width:r.width, height:r.height, scale:Math.max(dpr, nw/r.width)}});
-        }})()"""
-        rect_val = cdp_eval(ws, rect_js)
+        }})()""")
+        if not rect_val:
+            ws.close()
+            print(f"  GeminiProxy: could not locate image element")
+            return None
         time.sleep(0.4)
         rect = json.loads(rect_val)
 
@@ -605,7 +591,8 @@ def generate_image_clip_geminiproxy(prompt_text, clip_number, output_dir):
             )
         )
         screenshot_data = None
-        for _ in range(2000):
+        screenshot_deadline = time.monotonic() + 30
+        while time.monotonic() < screenshot_deadline:
             msg = json.loads(ws.recv())
             if msg.get("id") == pid:
                 screenshot_data = msg.get("result", {}).get("data")

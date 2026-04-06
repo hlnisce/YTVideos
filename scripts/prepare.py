@@ -611,9 +611,9 @@ def _generate_image_geminiproxy(prompt, output_path, image_style=None):
                 msg_id[0] += 1
         time.sleep(0.1)
 
-        snap_js = f"(function(){{var imgs=document.querySelectorAll({json.dumps(img_selector)}),srcs=[];for(var i=0;i<imgs.length;i++){{var s=imgs[i].currentSrc||imgs[i].src||imgs[i].getAttribute('src')||'';if(s&&imgs[i].complete&&imgs[i].naturalWidth>=100&&imgs[i].naturalHeight>=100)srcs.push(s);}}return JSON.stringify(srcs);}})()"
-        snap_val = cdp_eval(ws, snap_js)
-        existing_srcs = set(json.loads(snap_val)) if snap_val else set()
+        count_js = f"document.querySelectorAll({json.dumps(img_selector)}).length"
+        existing_count = int(cdp_eval(ws, count_js) or 0)
+        print(f"  GeminiProxy: {existing_count} images before generation", flush=True)
 
         style_desc = ""
         if image_style:
@@ -655,50 +655,50 @@ def _generate_image_geminiproxy(prompt, output_path, image_style=None):
             print(f"  GeminiProxy: submit attempt {attempt + 1} input not cleared, retrying", flush=True)
             time.sleep(1)
 
-        new_img = None
-        deadline = time.monotonic() + 60
-        while time.monotonic() < deadline:
+        # Poll until image count increases
+        found = False
+        poll_deadline = time.monotonic() + 120
+        while time.monotonic() < poll_deadline:
             time.sleep(2)
-            snap_val = cdp_eval(ws, snap_js)
-            if snap_val:
-                current = set(json.loads(snap_val))
-                new_urls = current - existing_srcs
-                if new_urls:
-                    new_img = list(new_urls)[0]
-                    break
+            new_count = int(cdp_eval(ws, count_js) or 0)
+            if new_count > existing_count:
+                print(f"  GeminiProxy: new image detected ({existing_count} -> {new_count})", flush=True)
+                found = True
+                break
+        time.sleep(0.5)
 
-        if new_img:
-            rect_val = cdp_eval(ws, f"""(function() {{
-                var imgs = document.querySelectorAll({json.dumps(img_selector)});
-                var img = null;
-                for (var i = imgs.length - 1; i >= 0; i--) {{
-                    if ((imgs[i].currentSrc || imgs[i].src || '') === {json.dumps(new_img)}) {{ img = imgs[i]; break; }}
-                }}
-                if (!img) img = imgs[imgs.length - 1];
-                img.scrollIntoView({{block:'center'}});
-                var r = img.getBoundingClientRect();
-                var dpr = window.devicePixelRatio || 1;
-                var nw = img.naturalWidth || r.width;
-                return JSON.stringify({{x:r.left, y:r.top, width:r.width, height:r.height, scale:Math.max(dpr, nw/r.width)}});
-            }})()""")
-            if not rect_val:
-                return False
-            time.sleep(0.4)
-            rect = json.loads(rect_val)
-            pid = msg_id[0]
-            msg_id[0] += 1
-            ws.send(json.dumps({"id": pid, "method": "Page.captureScreenshot", "params": {"format": "png", "clip": {"x": max(0, rect["x"]), "y": max(0, rect["y"]), "width": rect["width"], "height": rect["height"], "scale": rect["scale"]}}}))
-            screenshot_data = None
-            for _ in range(2000):
-                msg = json.loads(ws.recv())
-                if msg.get("id") == pid:
-                    screenshot_data = msg.get("result", {}).get("data")
-                    break
-            if screenshot_data:
-                import base64 as _b64
-                with open(output_path, "wb") as f:
-                    f.write(_b64.b64decode(screenshot_data))
-                return True
+        if not found:
+            return False
+
+        rect_val = cdp_eval(ws, f"""(function() {{
+            var imgs = document.querySelectorAll({json.dumps(img_selector)});
+            var img = imgs[imgs.length - 1];
+            if (!img) return null;
+            img.scrollIntoView({{block:'center'}});
+            var r = img.getBoundingClientRect();
+            var dpr = window.devicePixelRatio || 1;
+            var nw = img.naturalWidth || r.width;
+            return JSON.stringify({{x:r.left, y:r.top, width:r.width, height:r.height, scale:Math.max(dpr, nw/r.width)}});
+        }})()""")
+        if not rect_val:
+            return False
+        time.sleep(0.4)
+        rect = json.loads(rect_val)
+        pid = msg_id[0]
+        msg_id[0] += 1
+        ws.send(json.dumps({"id": pid, "method": "Page.captureScreenshot", "params": {"format": "png", "clip": {"x": max(0, rect["x"]), "y": max(0, rect["y"]), "width": rect["width"], "height": rect["height"], "scale": rect["scale"]}}}))
+        screenshot_data = None
+        screenshot_deadline = time.monotonic() + 30
+        while time.monotonic() < screenshot_deadline:
+            msg = json.loads(ws.recv())
+            if msg.get("id") == pid:
+                screenshot_data = msg.get("result", {}).get("data")
+                break
+        if screenshot_data:
+            import base64 as _b64
+            with open(output_path, "wb") as f:
+                f.write(_b64.b64decode(screenshot_data))
+            return True
 
         return False
     except Exception as e:

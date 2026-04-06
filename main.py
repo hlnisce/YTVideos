@@ -33,7 +33,7 @@ def refocus_web_app(cdp_port=9222):
 app = Flask(__name__)
 
 VIDEOS_DIR = "/home/henry/APPS/YTVideos/videos"
-VERSION = "v4.89"
+VERSION = "v4.96"
 
 STYLE_DESCRIPTIONS = {
     "3D Render": "Clean, modern 3D CGI render. Smooth surfaces, precise geometry, studio-quality lighting with soft shadows. Polished and professional digital art look.",
@@ -1714,6 +1714,8 @@ def _generate_image_geminiproxy(prompt, output_path, image_style=None):
                     return msg.get("result", {}).get("result", {}).get("value")
             return None
 
+        ws = _ws.create_connection(ws_url, timeout=60, suppress_origin=True)
+
         # Clear textbox utilizing proper CDP dispatch keys
         focus_js = r"document.querySelector('textarea, [contenteditable=true], [role=textbox]')?.focus();"
         cdp_eval(ws, focus_js)
@@ -1728,9 +1730,9 @@ def _generate_image_geminiproxy(prompt, output_path, image_style=None):
                 msg_id[0] += 1
         time.sleep(0.1)
 
-        snap_js = f"(function(){{var imgs=document.querySelectorAll({json.dumps(img_selector)}),srcs=[];for(var i=0;i<imgs.length;i++){{var s=imgs[i].currentSrc||imgs[i].src||imgs[i].getAttribute('src')||'';if(s&&imgs[i].complete&&imgs[i].naturalWidth>=100&&imgs[i].naturalHeight>=100)srcs.push(s);}}return JSON.stringify(srcs);}})()"
-        snap_val = cdp_eval(ws, snap_js)
-        existing_srcs = set(json.loads(snap_val)) if snap_val else set()
+        count_js = f"document.querySelectorAll({json.dumps(img_selector)}).length"
+        existing_count = int(cdp_eval(ws, count_js) or 0)
+        print(f"  GeminiProxy: {existing_count} images before generation", flush=True)
 
         style_desc = ""
         if image_style:
@@ -1772,26 +1774,23 @@ def _generate_image_geminiproxy(prompt, output_path, image_style=None):
             print(f"  GeminiProxy: submit attempt {attempt + 1} input not cleared, retrying", flush=True)
             time.sleep(1)
 
-        new_img = None
-        deadline = time.monotonic() + 60
-        while time.monotonic() < deadline:
+        # Poll until image count increases
+        found = False
+        poll_deadline = time.monotonic() + 120
+        while time.monotonic() < poll_deadline:
             time.sleep(2)
-            snap_val = cdp_eval(ws, snap_js)
-            if snap_val:
-                current = set(json.loads(snap_val))
-                new_urls = current - existing_srcs
-                if new_urls:
-                    new_img = list(new_urls)[0]
-                    break
+            new_count = int(cdp_eval(ws, count_js) or 0)
+            if new_count > existing_count:
+                print(f"  GeminiProxy: new image detected ({existing_count} -> {new_count})", flush=True)
+                found = True
+                break
+        time.sleep(0.5)
 
-        if new_img:
+        if found:
             rect_val = cdp_eval(ws, f"""(function() {{
                 var imgs = document.querySelectorAll({json.dumps(img_selector)});
-                var img = null;
-                for (var i = imgs.length - 1; i >= 0; i--) {{
-                    if ((imgs[i].currentSrc || imgs[i].src || '') === {json.dumps(new_img)}) {{ img = imgs[i]; break; }}
-                }}
-                if (!img) img = imgs[imgs.length - 1];
+                var img = imgs[imgs.length - 1];
+                if (!img) return null;
                 img.scrollIntoView({{block:'center'}});
                 var r = img.getBoundingClientRect();
                 var dpr = window.devicePixelRatio || 1;
@@ -1803,11 +1802,16 @@ def _generate_image_geminiproxy(prompt, output_path, image_style=None):
                 return False
             time.sleep(0.4)
             rect = json.loads(rect_val)
+            if rect["width"] <= 0 or rect["height"] <= 0:
+                ws.close()
+                print(f"  GeminiProxy: image element has zero dimensions", flush=True)
+                return False
             pid = msg_id[0]
             msg_id[0] += 1
             ws.send(json.dumps({"id": pid, "method": "Page.captureScreenshot", "params": {"format": "png", "clip": {"x": max(0, rect["x"]), "y": max(0, rect["y"]), "width": rect["width"], "height": rect["height"], "scale": rect["scale"]}}}))
             screenshot_data = None
-            for _ in range(2000):
+            screenshot_deadline = time.monotonic() + 30
+            while time.monotonic() < screenshot_deadline:
                 msg = json.loads(ws.recv())
                 if msg.get("id") == pid:
                     screenshot_data = msg.get("result", {}).get("data")
@@ -1867,6 +1871,7 @@ def _generate_cref_images(project_dir, image_style, image_model):
         output_path = os.path.join(project_dir, f"ref_{safe_name}.png")
 
         if image_model == "geminiproxy":
+            _pipeline.push(f"  Generating CREF image: {char_name}...")
             ok = _generate_image_geminiproxy(prompt, output_path, image_style)
             if ok:
                 input_dir = "/home/henry/comfy/ComfyUI/input"
@@ -1874,7 +1879,9 @@ def _generate_cref_images(project_dir, image_style, image_model):
                 if os.path.exists(output_path):
                     shutil.copy2(output_path, dst)
                     print(f"  Saved: {dst}")
+                _pipeline.push(f"  ✓ {char_name} saved", "success")
             else:
+                _pipeline.push(f"  ⚠ GeminiProxy failed for {char_name} — is the gemini.google.com tab open in Chrome on CDP port 9222?", "error")
                 print(f"  GeminiProxy failed for {char_name}")
         else:
             if not _comfyui_available():
@@ -3237,7 +3244,8 @@ def _capture_current_geminiproxy_image(output_path):
             )
         )
         screenshot_data = None
-        for _ in range(2000):
+        screenshot_deadline = time.monotonic() + 30
+        while time.monotonic() < screenshot_deadline:
             msg = json.loads(ws.recv())
             if msg.get("id") == pid:
                 screenshot_data = msg.get("result", {}).get("data")
@@ -3297,6 +3305,8 @@ def _generate_thumbnail_image_geminiproxy(prompt, output_path, image_style=None)
                     return msg.get("result", {}).get("result", {}).get("value")
             return None
 
+        ws = _ws.create_connection(ws_url, timeout=60, suppress_origin=True)
+
         # Clear textbox utilizing proper CDP dispatch keys
         focus_js = r"document.querySelector('textarea, [contenteditable=true], [role=textbox]')?.focus();"
         cdp_eval(ws, focus_js)
@@ -3311,19 +3321,9 @@ def _generate_thumbnail_image_geminiproxy(prompt, output_path, image_style=None)
                 msg_id[0] += 1
         time.sleep(0.1)
 
-        snap_js = f"(function(){{var imgs=document.querySelectorAll({json.dumps(img_selector)}),srcs=[];for(var i=0;i<imgs.length;i++){{var s=imgs[i].currentSrc||imgs[i].src||imgs[i].getAttribute('src')||'';if(s&&imgs[i].complete&&imgs[i].naturalWidth>=100&&imgs[i].naturalHeight>=100)srcs.push(s);}}return JSON.stringify(srcs);}})()"
-        snap_val = cdp_eval(ws, snap_js)
-        existing_srcs = set(json.loads(snap_val)) if snap_val else set()
-
-        # Focus the input box before inserting text
-        cdp_eval(
-            ws,
-            """(function() {
-            var el = document.querySelector('[contenteditable="true"]');
-            if (el) { el.focus(); el.click(); }
-        })()""",
-        )
-        time.sleep(0.3)
+        count_js = f"document.querySelectorAll({json.dumps(img_selector)}).length"
+        existing_count = int(cdp_eval(ws, count_js) or 0)
+        print(f"  GeminiProxy: {existing_count} images before generation", flush=True)
 
         style_desc = ""
         if image_style:
@@ -3366,80 +3366,49 @@ def _generate_thumbnail_image_geminiproxy(prompt, output_path, image_style=None)
             print(f"  GeminiProxy: submit attempt {attempt + 1} input not cleared, retrying", flush=True)
             time.sleep(1)
 
-        img_src = None
-        deadline = time.monotonic() + 120
-        existing_list = json.dumps(list(existing_srcs))
-        time.sleep(10)
-        while time.monotonic() < deadline:
-            val = cdp_eval(
-                ws,
-                f"""(function() {{
-                var known = new Set({existing_list});
-                var imgs = document.querySelectorAll({json.dumps(img_selector)});
-                for (var i = 0; i < imgs.length; i++) {{
-                    var img = imgs[i];
-                    var src = img.currentSrc || img.src || img.getAttribute('src') || '';
-                    if (src && !known.has(src) && img.complete && img.naturalWidth >= 100)
-                        return src;
-                }}
-                return null;
-            }})()""",
-            )
-            if val:
-                img_src = val
+        # Poll until image count increases
+        found = False
+        poll_deadline = time.monotonic() + 120
+        while time.monotonic() < poll_deadline:
+            time.sleep(2)
+            new_count = int(cdp_eval(ws, count_js) or 0)
+            if new_count > existing_count:
+                print(f"  GeminiProxy: new image detected ({existing_count} -> {new_count})", flush=True)
+                found = True
                 break
-            time.sleep(5)
+        time.sleep(0.5)
 
-        if not img_src:
+        if not found:
             ws.close()
             _pipeline.push("⚠ GeminiProxy: no image appeared within timeout", "error")
             return False
 
-        # Locate the exact image element and screenshot it
-        rect_val = cdp_eval(
-            ws,
-            f"""(function() {{
+        rect_val = cdp_eval(ws, f"""(function() {{
             var imgs = document.querySelectorAll({json.dumps(img_selector)});
-            var img = null;
-            for (var i = imgs.length - 1; i >= 0; i--) {{
-                if ((imgs[i].currentSrc || imgs[i].src || '') === {json.dumps(img_src)}) {{ img = imgs[i]; break; }}
-            }}
+            var img = imgs[imgs.length - 1];
             if (!img) return null;
             img.scrollIntoView({{block:'center'}});
             var r = img.getBoundingClientRect();
             var dpr = window.devicePixelRatio || 1;
             var nw = img.naturalWidth || r.width;
             return JSON.stringify({{x:r.left, y:r.top, width:r.width, height:r.height, scale:Math.max(dpr, nw/r.width)}});
-        }})()""",
-        )
+        }})()""")
         if not rect_val:
             ws.close()
             _pipeline.push("⚠ GeminiProxy: could not locate image element", "error")
             return False
         time.sleep(0.4)
         rect = json.loads(rect_val)
+        if rect["width"] <= 0 or rect["height"] <= 0:
+            ws.close()
+            print(f"  GeminiProxy: image element has zero dimensions", flush=True)
+            return False
         pid = msg_id[0]
         msg_id[0] += 1
-        ws.send(
-            json.dumps(
-                {
-                    "id": pid,
-                    "method": "Page.captureScreenshot",
-                    "params": {
-                        "format": "png",
-                        "clip": {
-                            "x": max(0, rect["x"]),
-                            "y": max(0, rect["y"]),
-                            "width": rect["width"],
-                            "height": rect["height"],
-                            "scale": rect["scale"],
-                        },
-                    },
-                }
-            )
-        )
+        ws.send(json.dumps({"id": pid, "method": "Page.captureScreenshot", "params": {"format": "png", "clip": {"x": max(0, rect["x"]), "y": max(0, rect["y"]), "width": rect["width"], "height": rect["height"], "scale": rect["scale"]}}}))
         screenshot_data = None
-        for _ in range(2000):
+        screenshot_deadline = time.monotonic() + 30
+        while time.monotonic() < screenshot_deadline:
             msg = json.loads(ws.recv())
             if msg.get("id") == pid:
                 screenshot_data = msg.get("result", {}).get("data")
@@ -3939,7 +3908,6 @@ def _parse_narration_response(
                 if len(s) > 10:
                     style_fragments.add(s)
         with open(rp_path, "w") as f:
-            f.write("=" * 40 + "\n\n")
             for i, line in enumerate(rp_lines, 1):
                 # Strip numbering and "Prompt N:" prefix
                 cleaned = re.sub(
