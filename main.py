@@ -33,7 +33,7 @@ def refocus_web_app(cdp_port=9222):
 app = Flask(__name__)
 
 VIDEOS_DIR = "/home/henry/APPS/YTVideos/videos"
-VERSION = "v4.96"
+VERSION = "v5.03"
 
 STYLE_DESCRIPTIONS = {
     "3D Render": "Clean, modern 3D CGI render. Smooth surfaces, precise geometry, studio-quality lighting with soft shadows. Polished and professional digital art look.",
@@ -161,9 +161,11 @@ HTML = r"""
         .prompt-sentence { width: 30%; color: #333; line-height: 1.5; }
         .prompts-table .prompt-text { width: 40%; font-family: monospace; font-size: 11px; color: #555; line-height: 0; padding: 0 !important; }
         .prompt-text-content { font-size: 11px; white-space: pre-wrap; word-break: break-word; }
-        .prompts-table .prompt-img { width: 160px; text-align: center; vertical-align: middle; }
-        .prompt-img img { max-height: 150px; border-radius: 4px; cursor: pointer; }
+        .prompts-table .prompt-img { width: 220px; text-align: center; vertical-align: middle; padding: 4px !important; }
+        .prompt-img img { width: 100%; border-radius: 4px; cursor: pointer; }
         .prompt-img img:hover { opacity: 0.85; }
+        .prompt-img video { width: 100%; border-radius: 4px; display: block; }
+        .prompt-img .clip-card { margin: 0; border: none; background: none; }
     </style>
 </head>
 <body>
@@ -187,6 +189,7 @@ HTML = r"""
                     <option value="chatgptproxy">ChatGPTProxy</option>
                     <option value="perplexityproxy">PerplexityProxy</option>
                     <option value="xiaomiproxy">XiaomiProxy</option>
+                    <option value="grokproxy">GrokProxy</option>
                     <option value="google">Google</option>
                 </select>
                 <select id="image_model" style="padding:5px 8px; font-size:12px; border-radius:4px; border:1px solid #ccc;">
@@ -197,6 +200,7 @@ HTML = r"""
                     <option value="flux1-dev.safetensors">Flux 1 Dev</option>
                     <option value="flux1-schnell.safetensors">Flux 1 Schnell</option>
                     <option value="flux1-schnell-fp8.safetensors">Flux 1 Schnell fp8</option>
+                    <option value="flux1-dev-fp8-e4m3fn.safetensors">Flux 1 Dev fp8</option>
                     <option value="geminiproxy">GeminiProxy</option>
                 </select>
             </h1>
@@ -218,6 +222,10 @@ HTML = r"""
                         <label>Title:</label>
                         <input type="text" id="title" style="flex:1;">
                         <button onclick="suggestTitle()" style="margin-left:6px; padding:4px 10px; background:#2a6496; color:#fff; border:none; border-radius:4px; cursor:pointer; font-size:12px; white-space:nowrap;">💡 Suggest</button>
+                    </div>
+                    <div class="form-group" style="align-items:flex-start;">
+                        <label style="padding-top:4px;">Summary:</label>
+                        <textarea id="summary" rows="4" placeholder="Describe what the story should be about — key themes, characters, tone, plot details, or any specific emphasis you want the AI to focus on..." style="flex:1; padding:5px 7px; font-size:12px; box-sizing:border-box; resize:vertical; font-family:inherit; border:1px solid #ccc; border-radius:4px; line-height:1.5;"></textarea>
                     </div>
                     <div class="form-group">
                         <label>Story Type:</label>
@@ -303,13 +311,41 @@ HTML = r"""
                         <input type="number" id="transition_duration" step="0.1" min="0" value="1.0" style="width:60px; flex:none;">
                     </div>
                     <div class="form-group">
+                        <label>TTS Provider:</label>
+                        <select id="tts_provider" onchange="onTTSProviderChange()">
+                            <option value="edge">Edge TTS (Microsoft)</option>
+                            <option value="comfyui">ComfyUI (Voice Clone)</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
                         <label>Voice:</label>
                         <select id="voice_model">
-                            <option value="en-US-AnaNeural">Ana (Female, Young)</option>
-                            <option value="en-US-JennyNeural">Jenny (Female)</option>
-                            <option value="en-US-AriaNeural">Aria (Female, Expressive)</option>
-                            <option value="en-US-GuyNeural">Guy (Male)</option>
-                            <option value="en-US-DavisNeural">Davis (Male, Casual)</option>
+                            <optgroup label="── Edge TTS (Microsoft) ──" id="edgeVoiceGroup">
+                                <option value="en-US-AnaNeural">Ana (Female, Young)</option>
+                                <option value="en-US-AvaNeural">Ava (Female)</option>
+                                <option value="en-US-EmmaNeural">Emma (Female)</option>
+                                <option value="en-US-EmmaMultilingualNeural">Emma Multilingual (Female)</option>
+                                <option value="en-US-JennyNeural">Jenny (Female)</option>
+                                <option value="en-US-MichelleNeural">Michelle (Female)</option>
+                                <option value="en-US-AriaNeural">Aria (Female, Expressive)</option>
+                                <option value="en-US-AndrewNeural">Andrew (Male)</option>
+                                <option value="en-US-BrianNeural">Brian (Male)</option>
+                                <option value="en-US-ChristopherNeural">Christopher (Male)</option>
+                                <option value="en-US-EricNeural">Eric (Male)</option>
+                                <option value="en-US-GuyNeural">Guy (Male)</option>
+                                <option value="en-US-DavisNeural">Davis (Male, Casual)</option>
+                                <option value="en-GB-SoniaNeural">Sonia (Female, British)</option>
+                            </optgroup>
+                            <optgroup label="── ComfyUI Voice Clone ──" id="comfyVoiceGroup">
+                                <option value="comfyui:voices_examples/David_Attenborough CC3.wav">David Attenborough</option>
+                                <option value="comfyui:voices_examples/Morgan_Freeman CC3.wav">Morgan Freeman</option>
+                                <option value="comfyui:voices_examples/Clint_Eastwood CC3 (enhanced2).wav">Clint Eastwood</option>
+                                <option value="comfyui:voices_examples/Sophie_Anderson CC3.wav">Sophie Anderson (Female)</option>
+                                <option value="comfyui:voices_examples/female/female_01.wav">Female 01</option>
+                                <option value="comfyui:voices_examples/female/female_02.wav">Female 02</option>
+                                <option value="comfyui:voices_examples/male/male_01.wav">Male 01</option>
+                                <option value="comfyui:voices_examples/male/male_02.wav">Male 02</option>
+                            </optgroup>
                         </select>
                     </div>
                     <div class="form-group">
@@ -324,10 +360,16 @@ HTML = r"""
                     <div class="form-group" id="videoModelGroup">
                         <label>Video Model:</label>
                         <select id="video_model">
-                            <option value="wan2.1_i2v_480p_14B_fp8_scaled.safetensors">WAN 2.1 i2v 480p fp8 (fast)</option>
-                            <option value="wan2.1_i2v_480p_14B_fp16.safetensors">WAN 2.1 i2v 480p fp16</option>
-                            <option value="wan2.1_i2v_720p_14B_fp8_scaled.safetensors">WAN 2.1 i2v 720p fp8</option>
-                            <option value="wan2.1_i2v_720p_14B_fp16.safetensors">WAN 2.1 i2v 720p fp16</option>
+                            <optgroup label="── WAN 2.1 ──">
+                                <option value="wan2.1_i2v_480p_14B_fp8_scaled.safetensors">WAN 2.1 i2v 480p fp8 (fast)</option>
+                                <option value="wan2.1_i2v_480p_14B_fp16.safetensors">WAN 2.1 i2v 480p fp16</option>
+                                <option value="wan2.1_i2v_720p_14B_fp8_scaled.safetensors">WAN 2.1 i2v 720p fp8</option>
+                                <option value="wan2.1_i2v_720p_14B_fp16.safetensors">WAN 2.1 i2v 720p fp16</option>
+                            </optgroup>
+                            <optgroup label="── LTX-Video ──">
+                                <option value="ltxv-2b-0.9.8-distilled-fp8.safetensors">LTX-Video 2B v0.9.8 distilled fp8 (recommended)</option>
+                                <option value="ltx-video-2b-v0.9.5.safetensors">LTX-Video 2B v0.9.5</option>
+                            </optgroup>
                         </select>
                     </div>
                     <div class="form-group">
@@ -495,6 +537,25 @@ HTML = r"""
             videoModelGroup.style.opacity = isVideo ? '1' : '0.4';
             videoModelGroup.style.pointerEvents = isVideo ? 'auto' : 'none';
         }
+
+        function onTTSProviderChange() {
+            const provider = document.getElementById('tts_provider').value;
+            const sel = document.getElementById('voice_model');
+            const edgeGroup = document.getElementById('edgeVoiceGroup');
+            const comfyGroup = document.getElementById('comfyVoiceGroup');
+            if (provider === 'comfyui') {
+                edgeGroup.style.display = 'none';
+                comfyGroup.style.display = '';
+                sel.value = 'comfyui:voices_examples/David_Attenborough CC3.wav';
+            } else {
+                edgeGroup.style.display = '';
+                comfyGroup.style.display = 'none';
+                sel.value = 'en-US-AnaNeural';
+            }
+        }
+
+        // Run on page load to sync voice list with default provider
+        document.addEventListener('DOMContentLoaded', () => onTTSProviderChange());
 
         function log(message, type = 'info') {
             const logContent = document.getElementById('logContent');
@@ -935,9 +996,14 @@ HTML = r"""
                 .then(r => r.json())
                 .then(data => {
                     document.getElementById('title').value = title;
+                    document.getElementById('summary').value = data.summary || '';
                     document.getElementById('story_type').value = data.story_type || 'children_story';
                     document.getElementById('image_style').value = data.image_style || 'cartoon';
-                    document.getElementById('voice_model').value = data.voice_model || 'en-US-AnaNeural';
+                    const vm = data.voice_model || 'en-US-AnaNeural';
+                    const provider = vm.startsWith('comfyui:') ? 'comfyui' : (data.tts_provider || 'edge');
+                    document.getElementById('tts_provider').value = provider;
+                    onTTSProviderChange();  // filter voice list before setting value
+                    document.getElementById('voice_model').value = vm;
                     document.getElementById('voice_rate').value = data.voice_rate || '-20%';
                     document.getElementById('video_model').value = data.video_model || 'wan2.1_i2v_480p_14B_fp8_scaled.safetensors';
                     document.getElementById('clip_count').value = data.clip_count !== undefined ? data.clip_count : 0;
@@ -971,17 +1037,25 @@ HTML = r"""
                     const characters = crefData.characters || [];
                     container.innerHTML = `
                         <table class="prompts-table">
-                            <thead><tr><th>#</th><th>Sentence</th><th>Raw Prompt</th><th>CREF</th><th>Final Prompt</th><th>Image</th></tr></thead>
+                            <thead><tr><th>#</th><th>Sentence</th><th>Raw Prompt</th><th>CREF</th><th>Final Prompt</th><th>Clip</th></tr></thead>
                             <tbody>${promptData.prompts.map((p, i) => {
-                                const clipName = `clip_${String(i + 1).padStart(2, '0')}.png`;
-                                const hasClip = clips.includes(clipName);
-                                const imgCell = hasClip
-                                    ? `<img src="/api/clip-image?title=${encodeURIComponent(title)}&name=${encodeURIComponent(clipName)}" 
-                                            alt="${clipName}" 
-                                            onclick="regenerateClipImage(${i}, '${clipName}')"
-                                            style="cursor: pointer; transition: opacity 0.2s;"
-                                            title="Click to regenerate image">`
-                                    : `<div style="padding:10px; color:#999; cursor:pointer;" onclick="regenerateClipImage(${i}, '${clipName}')">Click to generate</div>`;
+                                const num = String(i + 1).padStart(2, '0');
+                                const clipMp4 = `clip_${num}.mp4`;
+                                const clipPng = `clip_${num}.png`;
+                                const hasVideo = clips.includes(clipMp4);
+                                const hasImage = clips.includes(clipPng);
+                                const clipName = hasVideo ? clipMp4 : clipPng;
+                                const clipUrl = `/api/clip-image?title=${encodeURIComponent(title)}&name=${encodeURIComponent(clipName)}`;
+                                const vidId = `promptvid-${i}`;
+                                const imgCell = hasVideo
+                                    ? `<div class="clip-card" style="margin:0;border:none;background:none;">
+                                          <video id="${vidId}" src="${clipUrl}" muted style="width:100%;border-radius:4px;"
+                                            onmouseenter="this.play()" onmouseleave="this.pause();this.currentTime=0;"></video>
+                                          <div class="clip-label">${clipMp4}</div>
+                                       </div>`
+                                    : hasImage
+                                    ? `<img src="${clipUrl}" alt="${clipName}" onclick="regenerateClipImage(${i}, '${clipName}')" style="width:100%;border-radius:4px;cursor:pointer;" title="Click to regenerate">`
+                                    : `<div style="padding:10px; color:#999; cursor:pointer;" onclick="regenerateClipImage(${i}, '${clipPng}')">Click to generate</div>`;
                                 const crefCheckboxes = characters.map(c => {
                                     const fullDesc = c.description ? `${c.name}, ${c.description}` : c.name;
                                     const isChecked = p.prompt.includes(c.name);
@@ -1290,8 +1364,10 @@ HTML = r"""
         function saveConfig() {
             const config = {
                 title: document.getElementById('title').value,
+                summary: document.getElementById('summary').value.trim(),
                 story_type: document.getElementById('story_type').value,
                 image_style: document.getElementById('image_style').value,
+                tts_provider: document.getElementById('tts_provider').value,
                 voice_model: document.getElementById('voice_model').value,
                 voice_rate: document.getElementById('voice_rate').value,
                 video_model: document.getElementById('video_model').value,
@@ -2974,13 +3050,138 @@ def _call_ai(prompt, ai_helper, timeout=120):
 
             matches = list(
                 _re.finditer(
-                    r"Thought for [\d.]+ seconds?\s*(.+?)(?=\s*(?:MiMo-V2-Pro|Developer demo|Citation sources|$))",
+                    r"(?:Thought for [\d.]+ seconds?|Finished thinking)\s*(.+?)(?=\s*(?:MiMo-V2-Pro|Developer demo|Citation sources|$))",
                     reply,
                     _re.DOTALL,
                 )
             )
             if matches:
                 return matches[-1].group(1).strip()
+            return reply.strip()
+        finally:
+            pw.close()
+            refocus_web_app(cdp_port)
+
+    if ai_helper == "grokproxy":
+        import websocket as _ws
+
+        prompt = "Respond in plain text only. Do not generate any images. " + prompt
+
+        cdp_port = 9222
+        tab_url = "grok.com"
+        # Response container selector (confirmed via DOM inspection)
+        msg_selector = "div.message-bubble"
+        content_selector = "div.response-content-markdown"
+        done_selector = "div.action-buttons"
+
+        resp = requests.get(f"http://localhost:{cdp_port}/json", timeout=3)
+        tabs = [
+            t
+            for t in resp.json()
+            if t.get("type") == "page" and tab_url in t.get("url", "")
+        ]
+        if not tabs:
+            raise RuntimeError(f"GrokProxy: no Chrome tab found for {tab_url} — open grok.com in Chrome on CDP port 9222")
+        tab = tabs[0]
+        ws_url = tab["webSocketDebuggerUrl"]
+        requests.get(
+            f"http://localhost:{cdp_port}/json/activate/{tab['id']}", timeout=3
+        )
+        time.sleep(0.5)
+        deadline = time.monotonic() + timeout
+        poll_id = [1]
+        ws = _ws.create_connection(ws_url, timeout=10, suppress_origin=True)
+
+        def cdp_eval(js):
+            if time.monotonic() > deadline:
+                return None
+            pid = poll_id[0]
+            poll_id[0] += 1
+            ws.send(json.dumps({"id": pid, "method": "Runtime.evaluate", "params": {"expression": js}}))
+            for _ in range(200):
+                if time.monotonic() > deadline:
+                    return None
+                msg = json.loads(ws.recv())
+                if msg.get("id") == pid:
+                    return msg.get("result", {}).get("result", {}).get("value")
+            return None
+
+        existing_count = int(cdp_eval(f"document.querySelectorAll({json.dumps(msg_selector)}).length") or 0)
+
+        # Navigate to fresh chat page so input is clean
+        cdp_eval("window.location.href = 'https://grok.com'")
+        time.sleep(2)
+        ws.close()
+
+        # Reconnect after navigation
+        new_tabs = [t for t in requests.get(f"http://localhost:{cdp_port}/json", timeout=3).json()
+                    if t.get("type") == "page" and tab_url in t.get("url", "")]
+        ws_url = new_tabs[0]["webSocketDebuggerUrl"] if new_tabs else ws_url
+        ws = _ws.create_connection(ws_url, timeout=10, suppress_origin=True)
+        poll_id[0] = 1
+
+        existing_count = 0  # fresh page has no messages
+
+        # Focus and type prompt
+        cdp_eval("document.querySelector('textarea')?.focus()")
+        time.sleep(0.2)
+        ws.send(json.dumps({"id": poll_id[0], "method": "Input.insertText", "params": {"text": prompt}}))
+        ws.recv()
+        poll_id[0] += 1
+        time.sleep(0.3)
+
+        # Submit via form dispatch (Grok's send button is icon-only, form submit is reliable)
+        cdp_eval("document.querySelector('form')?.dispatchEvent(new Event('submit', {bubbles:true, cancelable:true}))")
+        ws.close()
+        time.sleep(1)
+
+        # Reconnect to follow navigation to conversation page
+        for _ in range(10):
+            new_tabs = [t for t in requests.get(f"http://localhost:{cdp_port}/json", timeout=3).json()
+                        if t.get("type") == "page" and tab_url in t.get("url", "")]
+            if new_tabs and "/c/" in new_tabs[0].get("url", ""):
+                ws_url = new_tabs[0]["webSocketDebuggerUrl"]
+                break
+            time.sleep(0.5)
+
+        pw = _ws.create_connection(ws_url, timeout=10, suppress_origin=True)
+        pw_poll_id = [1]
+
+        def pw_eval(js):
+            if time.monotonic() > deadline:
+                return None
+            pid = pw_poll_id[0]
+            pw_poll_id[0] += 1
+            pw.send(json.dumps({"id": pid, "method": "Runtime.evaluate", "params": {"expression": js}}))
+            for _ in range(100):
+                if time.monotonic() > deadline:
+                    return None
+                msg = json.loads(pw.recv())
+                if msg.get("id") == pid:
+                    return msg.get("result", {}).get("result", {}).get("value")
+            return None
+
+        reply = None
+        prev_text = None
+        time.sleep(1)
+        try:
+            while time.monotonic() < deadline:
+                # Check if action-buttons (done indicator) appeared
+                done = pw_eval(f"document.querySelectorAll({json.dumps(done_selector)}).length")
+                content = pw_eval(f"""(function() {{
+                    var els = document.querySelectorAll({json.dumps(content_selector)});
+                    if (!els.length) return null;
+                    return els[els.length - 1].innerText.trim() || null;
+                }})()""")
+                if content and content == prev_text and int(done or 0) > 0:
+                    reply = content
+                    break
+                prev_text = content
+                time.sleep(1)
+            if not reply and prev_text:
+                reply = prev_text
+            if not reply:
+                raise RuntimeError("GrokProxy: timed out waiting for response")
             return reply.strip()
         finally:
             pw.close()
@@ -3556,7 +3757,43 @@ def _generate_thumbnail_and_metadata(
         p.push(f"⚠ Thumbnail generation error: {e}", "info")
 
 
-def _generate_audio_and_assemble(project_dir, narration_path, voice_model, voice_rate):
+def _run_tts_line(line, audio_path, voice_model, voice_rate, tts_provider, p, i, total):
+    """Generate TTS for a single line using the configured provider."""
+    import time as _time
+    if tts_provider == "comfyui":
+        try:
+            import sys as _sys
+            _cc = "/home/henry/APPS/ContentCreator/Imager"
+            if _cc not in _sys.path:
+                _sys.path.insert(0, _cc)
+            from core.comfy_api import ComfyGenerator
+            gen = ComfyGenerator(server_address="127.0.0.1:8188")
+            res = gen.generate_audio(line, audio_path, voice=voice_model)
+            if not res.get("success"):
+                p.push(f"  ✗ ComfyUI TTS line {i}: {res.get('error', 'unknown error')}", "info")
+        except Exception as e:
+            p.push(f"  ✗ ComfyUI TTS line {i} failed: {e}", "info")
+    else:
+        tts_cmd = [
+            "/home/henry/.local/bin/edge-tts",
+            "--voice", voice_model,
+            f"--rate={voice_rate}",
+            "--text", line,
+            "--write-media", audio_path,
+        ]
+        for attempt in range(1, 4):
+            try:
+                subprocess.run(tts_cmd, check=True, capture_output=True)
+                break
+            except Exception as e:
+                if attempt < 3:
+                    p.push(f"  ⚠ TTS line {i} attempt {attempt} failed — retrying in 10s: {e}", "info")
+                    _time.sleep(10)
+                else:
+                    p.push(f"  ✗ TTS line {i} failed after 3 attempts: {e}", "info")
+
+
+def _generate_audio_and_assemble(project_dir, narration_path, voice_model, voice_rate, tts_provider="edge"):
     """Generate TTS audio per narration line then assemble final video with ffmpeg."""
     import glob as _glob
 
@@ -3583,6 +3820,7 @@ def _generate_audio_and_assemble(project_dir, narration_path, voice_model, voice
             voice_rate,
             transition_style,
             transition_duration,
+            tts_provider=tts_provider,
         )
         return
 
@@ -3601,35 +3839,21 @@ def _generate_audio_and_assemble(project_dir, narration_path, voice_model, voice
     os.makedirs(segments_dir, exist_ok=True)
 
     # --- Step 1: TTS audio per line ---
-    p.push(f"Generating audio ({voice_model}, rate {voice_rate})...")
+    p.push(f"Generating audio via {tts_provider} ({voice_model}, rate {voice_rate})...")
     for i, line in enumerate(lines, 1):
         audio_path = os.path.join(audio_dir, f"line_{i:02d}.mp3")
         if os.path.exists(audio_path):
             p.push(f"  line_{i:02d}.mp3 exists — skipping", "info")
             continue
         p.push(f"  TTS line {i}/{len(lines)}...")
-        try:
-            subprocess.run(
-                [
-                    "/home/henry/.local/bin/edge-tts",
-                    "--voice",
-                    voice_model,
-                    f"--rate={voice_rate}",
-                    "--text",
-                    line,
-                    "--write-media",
-                    audio_path,
-                ],
-                check=True,
-                capture_output=True,
-            )
-        except Exception as e:
-            p.push(f"  ⚠ TTS failed for line {i}: {e}", "info")
+        _run_tts_line(line, audio_path, voice_model, voice_rate, tts_provider, p, i, len(lines))
 
     # --- Step 2: combine each clip with its audio into a segment ---
     all_clips = sorted(
         _glob.glob(os.path.join(clips_dir, "clip_*.png"))
         + _glob.glob(os.path.join(clips_dir, "clip_*.mp4"))
+        + _glob.glob(os.path.join(clips_dir, "image_*.png"))
+        + _glob.glob(os.path.join(clips_dir, "image_*.mp4"))
     )
     if not all_clips:
         p.push("⚠ No clips found — skipping assembly", "error")
@@ -3637,11 +3861,13 @@ def _generate_audio_and_assemble(project_dir, narration_path, voice_model, voice
 
     segment_files = []
     for clip_path in all_clips:
-        m = re.search(r"clip_(\d+)", os.path.basename(clip_path))
+        m = re.search(r"(?:clip|image)_(\d+)", os.path.basename(clip_path))
         if not m:
             continue
         num = m.group(1)
-        audio_path = os.path.join(audio_dir, f"line_{num}.mp3")
+        idx = int(num)
+        audio_num = f"{idx:02d}"
+        audio_path = os.path.join(audio_dir, f"line_{audio_num}.mp3")
         segment_path = os.path.join(segments_dir, f"segment_{num}.mp4")
 
         if not os.path.exists(audio_path):
@@ -3807,16 +4033,38 @@ def _generate_audio_and_assemble(project_dir, narration_path, voice_model, voice
         p.push(f"✗ Assembly failed: {e}", "error")
 
 
-def _build_narration_prompt(title, story_type, sentence_count=30):
+def _build_narration_prompt(title, story_type, sentence_count=None, summary=None):
     """Build the narration+prompts+CREF prompt text. Shared by all AI helpers."""
     story_type_display = story_type.replace("_", " ").title()
+    length_instruction = (
+        f"Write a {sentence_count}-sentence" if sentence_count
+        else "Write a"
+    )
+    summary_clause = (
+        f"\n\nStory guidance (follow this closely): {summary.strip()}\n"
+        if summary and summary.strip()
+        else ""
+    )
+    if story_type == "children_story":
+        ending_instruction = (
+            f"IMPORTANT: The second-to-last sentence must be a single sentence explicitly stating the moral of the story. "
+            f"The very last sentence must be a SINGLE CTA asking viewers to like, share and subscribe — "
+            f"and must mention tapping or clicking the Subscribe button/icon. "
+            f"Limit each to exactly one sentence.\n\n"
+        )
+    else:
+        ending_instruction = (
+            f"IMPORTANT: Do NOT include an explicit moral of the story statement — this is not a children's story. "
+            f"The very last sentence must be a SINGLE CTA asking viewers to like, share and subscribe — "
+            f"and must mention tapping or clicking the Subscribe button/icon. "
+            f"Limit this to exactly one sentence.\n\n"
+        )
     return (
-        f"Write a {sentence_count}-sentence {story_type_display} narration script for a "
-        f"YouTube video titled '{title}'. Output only the story text — one sentence per "
+        f"{length_instruction} {story_type_display} narration script for a "
+        f"YouTube video titled '{title}'.{summary_clause} Output only the story text — one sentence per "
         f"line, no numbering, no headers, no extra commentary. "
-        f"IMPORTANT: The very last sentence of the narration must always be a SINGLE CTA asking viewers "
-        f"to like, share and subscribe. Limit this to exactly one sentence.\n\n"
-        f"Then after the narration, write a section called [Prompts] and for EACH sentence above, "
+        + ending_instruction
+        + f"Then after the narration, write a section called [Prompts] and for EACH sentence above, "
         f"write a detailed image generation prompt. Each prompt should describe the scene vividly: "
         f"setting, background, lighting, camera angle (close-up, wide shot, etc.), character positions, "
         f"mood, and colors. One prompt per line, no numbering.\n\n"
@@ -3942,11 +4190,12 @@ def _generate_narration(
     narration_path,
     ai_helper,
     project_dir=None,
-    sentence_count=30,
+    sentence_count=None,
     image_style="Stick Figure",
+    summary=None,
 ):
     """Generate narration.txt, RawPrompt.txt, and CREF.txt using the configured AI helper. Returns prompt or raises."""
-    prompt = _build_narration_prompt(title, story_type, sentence_count)
+    prompt = _build_narration_prompt(title, story_type, sentence_count, summary)
     project_dir = project_dir or os.path.dirname(narration_path)
     rawprompt_path = os.path.join(project_dir, "RawPrompt.txt")
     cref_path = os.path.join(project_dir, "CREF.txt")
@@ -3962,7 +4211,7 @@ def _generate_narration(
         resp = requests.post(
             "http://localhost:11434/api/generate",
             json={"model": "gemma4:e4b", "prompt": prompt, "stream": False},
-            timeout=180,
+            timeout=600,
         )
         resp.raise_for_status()
         full_content = resp.json().get("response", "").strip()
@@ -3983,8 +4232,8 @@ def _generate_narration(
         _ensure_key_service()
         resp = requests.post(
             f"{KEY_SERVICE_URL}/tmux/chat",
-            json={"text": f"claude: {prompt}", "timeout": 180},
-            timeout=190,
+            json={"text": f"claude: {prompt}", "timeout": 360},
+            timeout=370,
         )
         resp.raise_for_status()
         full_content = resp.json().get("reply", "").strip()
@@ -4173,6 +4422,7 @@ def _generate_narration(
         "deepseekproxy",
         "perplexityproxy",
         "xiaomiproxy",
+        "grokproxy",
     ):
         full_content = _call_ai(prompt, ai_helper, timeout=180)
         if not full_content:
@@ -4221,12 +4471,13 @@ def _run_pipeline(
     narration_path,
     story_type,
     ai_helper,
-    sentence_count=30,
+    sentence_count=None,
     step_narration=True,
     step_prompts=True,
     step_thumbnail=True,
     step_clips=True,
     step_assemble=True,
+    summary=None,
 ):
     """Background thread: generate narration → prompts → video."""
     p = _pipeline
@@ -4255,6 +4506,7 @@ def _run_pipeline(
                     project_dir,
                     sentence_count,
                     proj_cfg.get("image_style", "Stick Figure"),
+                    summary=summary,
                 )
                 p.push(f"✓ Narration created: {narration_path}", "success")
         else:
@@ -4307,8 +4559,13 @@ def _run_pipeline(
         if step_assemble:
             voice_model = proj_cfg.get("voice_model", "en-US-AnaNeural")
             voice_rate = proj_cfg.get("voice_rate", "+0%")
+            tts_provider = proj_cfg.get("tts_provider", "edge")
+            # Auto-detect provider from voice value prefix
+            if voice_model.startswith("comfyui:"):
+                tts_provider = "comfyui"
+                voice_model = voice_model[len("comfyui:"):]
             _generate_audio_and_assemble(
-                project_dir, narration_path, voice_model, voice_rate
+                project_dir, narration_path, voice_model, voice_rate, tts_provider=tts_provider
             )
         else:
             p.push("⊘ Skipping Assemble", "info")
@@ -4345,13 +4602,14 @@ def generate_narration():
     story_type = config.get("story_type", "children_story")
     ai_helper = config.get("ai_helper", "opencode")
     clip_count = config.get("clip_count", 0)
-    sentence_count = clip_count if clip_count and clip_count > 0 else 30
+    sentence_count = clip_count if clip_count and clip_count > 0 else None
     narration_path = os.path.join(project_dir, "narration.txt")
     step_narration = config.get("step_narration", True)
     step_prompts = config.get("step_prompts", True)
     step_thumbnail = config.get("step_thumbnail", True)
     step_clips = config.get("step_clips", True)
     step_assemble = config.get("step_assemble", True)
+    summary = config.get("summary", "")
 
     _pipeline.running = True
     _pipeline.logs.clear()
@@ -4370,6 +4628,7 @@ def generate_narration():
             step_thumbnail,
             step_clips,
             step_assemble,
+            summary,
         ),
         daemon=True,
     )
@@ -5268,6 +5527,7 @@ def _assemble_with_xfade(
     voice_rate,
     transition_style,
     transition_duration,
+    tts_provider="edge",
 ):
     """Refactored assembly that uses a single ffmpeg filter_complex with xfade."""
     import glob as _glob
@@ -5292,32 +5552,21 @@ def _assemble_with_xfade(
     with open(narration_path) as f:
         lines = [l.strip() for l in f if l.strip()]
 
-    # --- Step 1: TTS audio per line (same as original) ---
-    p.push(f"Generating audio for xfade ({voice_model})...")
+    # --- Step 1: TTS audio per line ---
+    p.push(f"Generating audio via {tts_provider} for xfade ({voice_model})...")
     for i, line in enumerate(lines, 1):
         audio_path = os.path.join(audio_dir, f"line_{i:02d}.mp3")
-        if not os.path.exists(audio_path):
-            try:
-                subprocess.run(
-                    [
-                        "/home/henry/.local/bin/edge-tts",
-                        "--voice",
-                        voice_model,
-                        f"--rate={voice_rate}",
-                        "--text",
-                        line,
-                        "--write-media",
-                        audio_path,
-                    ],
-                    check=True,
-                    capture_output=True,
-                )
-            except Exception as e:
-                p.push(f"  ⚠ TTS line {i} failed: {e}", "info")
+        if os.path.exists(audio_path):
+            p.push(f"  line_{i:02d}.mp3 exists — skipping", "info")
+            continue
+        p.push(f"  TTS line {i}/{len(lines)}...")
+        _run_tts_line(line, audio_path, voice_model, voice_rate, tts_provider, p, i, len(lines))
 
     all_clips = sorted(
         _glob.glob(os.path.join(clips_dir, "clip_*.png"))
         + _glob.glob(os.path.join(clips_dir, "clip_*.mp4"))
+        + _glob.glob(os.path.join(clips_dir, "image_*.png"))
+        + _glob.glob(os.path.join(clips_dir, "image_*.mp4"))
     )
     if not all_clips:
         p.push("⚠ No clips found for xfade", "error")
@@ -5326,11 +5575,12 @@ def _assemble_with_xfade(
     # Filter out clips without matching audio
     segments = []
     for clip_path in all_clips:
-        m = re.search(r"clip_(\d+)", os.path.basename(clip_path))
+        m = re.search(r"(?:clip|image)_(\d+)", os.path.basename(clip_path))
         if not m:
             continue
         num = m.group(1)
-        audio_path = os.path.join(audio_dir, f"line_{num}.mp3")
+        audio_num = f"{int(num):02d}"
+        audio_path = os.path.join(audio_dir, f"line_{audio_num}.mp3")
         if os.path.exists(audio_path):
             try:
                 out = (

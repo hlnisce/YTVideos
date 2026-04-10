@@ -320,6 +320,186 @@ def _is_flux2_model(model_name):
     return "flux2" in model_name.lower()
 
 
+def _is_ltx_model(model_name):
+    return "ltx" in model_name.lower() or "ltxv" in model_name.lower()
+
+
+def generate_ltx_clip(prompt_text, clip_number, primary_image, output_dir):
+    """Generate a single video clip using LTX-Video I2V via ComfyUI."""
+    output_prefix = f"clip_{clip_number:02d}"
+    print(f"Generating LTX clip {clip_number:02d}...", flush=True)
+
+    width, height = 768, 512
+    frame_rate = 25
+
+    # Match video length to audio duration if audio file exists
+    audio_path = os.path.join(os.path.dirname(output_dir), "audio", f"line_{clip_number:02d}.mp3")
+    length = 97  # default ~3.9s
+    if os.path.exists(audio_path):
+        try:
+            dur_str = subprocess.check_output([
+                "ffprobe", "-v", "error", "-show_entries", "format=duration",
+                "-of", "default=noprint_wrappers=1:nokey=1", audio_path
+            ]).strip().decode()
+            audio_dur = float(dur_str)
+            # LTX length must satisfy: (length - 1) % 8 == 0, minimum 9
+            raw_frames = audio_dur * frame_rate
+            length = max(9, int(round(raw_frames / 8)) * 8 + 1)
+            print(f"  Audio duration: {audio_dur:.2f}s → {length} frames", flush=True)
+        except Exception as e:
+            print(f"  Could not read audio duration, using default: {e}", flush=True)
+
+    # CheckpointLoaderSimple loads the full LTX model including built-in VAE
+    # T5 text encoder is loaded separately via CLIPLoader (type "ltxv")
+    workflow = {
+        "1": {
+            "class_type": "CheckpointLoaderSimple",
+            "inputs": {"ckpt_name": VIDEO_MODEL},
+        },
+        "2": {
+            "class_type": "CLIPLoader",
+            "inputs": {"clip_name": "t5xxl_fp8_e4m3fn.safetensors", "type": "ltxv"},
+        },
+        "4": {
+            "class_type": "LoadImage",
+            "inputs": {"image": primary_image},
+        },
+        "5": {
+            "class_type": "CLIPTextEncode",
+            "inputs": {"clip": ["2", 0], "text": prompt_text},
+        },
+        "6": {
+            "class_type": "CLIPTextEncode",
+            "inputs": {
+                "clip": ["2", 0],
+                "text": "low quality, worst quality, deformed, distorted, disfigured, motion smear, motion artifacts, fused fingers, bad anatomy, weird hand, ugly, blurry, watermark",
+            },
+        },
+        # LTXVConditioning sets frame_rate metadata on conditioning
+        "7": {
+            "class_type": "LTXVConditioning",
+            "inputs": {
+                "positive": ["5", 0],
+                "negative": ["6", 0],
+                "frame_rate": frame_rate,
+            },
+        },
+        # LTXVImgToVideo encodes the start image — VAE comes from checkpoint output 2
+        "8": {
+            "class_type": "LTXVImgToVideo",
+            "inputs": {
+                "positive": ["7", 0],
+                "negative": ["7", 1],
+                "vae": ["1", 2],
+                "image": ["4", 0],
+                "width": width,
+                "height": height,
+                "length": length,
+                "batch_size": 1,
+                "strength": 1.0,
+            },
+        },
+        # LTXVScheduler produces sigmas
+        "9": {
+            "class_type": "LTXVScheduler",
+            "inputs": {
+                "latent": ["8", 2],
+                "steps": 30,
+                "max_shift": 2.05,
+                "base_shift": 0.95,
+                "stretch": True,
+                "terminal": 0.1,
+            },
+        },
+        # SamplerCustom drives the denoise loop — model from checkpoint output 0
+        "10": {
+            "class_type": "SamplerCustom",
+            "inputs": {
+                "model": ["1", 0],
+                "add_noise": True,
+                "noise_seed": random.randint(0, 2**32 - 1),
+                "cfg": 3.0,
+                "positive": ["8", 0],
+                "negative": ["8", 1],
+                "sampler": ["11", 0],
+                "sigmas": ["9", 0],
+                "latent_image": ["8", 2],
+            },
+        },
+        "11": {
+            "class_type": "KSamplerSelect",
+            "inputs": {"sampler_name": "euler"},
+        },
+        "12": {
+            "class_type": "VAEDecode",
+            "inputs": {"samples": ["10", 0], "vae": ["1", 2]},
+        },
+        "13": {
+            "class_type": "CreateVideo",
+            "inputs": {"images": ["12", 0], "fps": frame_rate},
+        },
+        "14": {
+            "class_type": "SaveVideo",
+            "inputs": {
+                "filename_prefix": output_prefix,
+                "video": ["13", 0],
+                "format": "mp4",
+                "codec": "h264",
+            },
+        },
+    }
+
+    try:
+        resp = requests.post(f"{COMFYUI_URL}/prompt", json={"prompt": workflow})
+        data = resp.json()
+        if "error" in data:
+            print(f"  LTX Error: {data['error']}")
+            return None
+
+        prompt_id = data["prompt_id"]
+        print(f"  Queued: {prompt_id}", flush=True)
+
+        for attempt in range(200):
+            time.sleep(3)
+            history = requests.get(f"{COMFYUI_URL}/history/{prompt_id}").json()
+            if prompt_id in history:
+                job = history[prompt_id]
+                # Check for execution error first
+                status = job.get("status", {})
+                if status.get("status_str") == "error":
+                    msgs = status.get("messages", [])
+                    err_msgs = [m for m in msgs if m[0] == "execution_error"]
+                    err_text = err_msgs[0][1] if err_msgs else str(msgs)
+                    print(f"  ComfyUI error for LTX clip {clip_number}: {err_text}", flush=True)
+                    return None
+                # Only break if job is actually complete (has outputs or status done)
+                if status.get("status_str") == "success" or status.get("completed"):
+                    outputs = job.get("outputs", {})
+                    for node_out in outputs.values():
+                        for key in ("images", "gifs", "videos"):
+                            for item in node_out.get(key, []):
+                                filename = item.get("filename", "")
+                                if not filename.endswith(".mp4"):
+                                    continue
+                                src = os.path.join("/home/henry/comfy/ComfyUI/output", filename)
+                                dst = os.path.join(output_dir, f"{output_prefix}.mp4")
+                                if os.path.exists(src):
+                                    shutil.copy2(src, dst)
+                                    print(f"  Saved: {dst}", flush=True)
+                                    return dst
+                    print(f"  LTX clip {clip_number}: job done but no mp4 output found", flush=True)
+                    return None
+            if attempt % 15 == 0 and attempt > 0:
+                print(f"  Waiting... {attempt * 3}s elapsed", flush=True)
+
+        print(f"  Timeout for LTX clip {clip_number}")
+        return None
+
+    except Exception as e:
+        print(f"  Error generating LTX clip {clip_number}: {e}")
+        return None
+
+
 def _build_checkpoint_workflow(prompt_text, output_prefix):
     return {
         "1": {
@@ -758,7 +938,14 @@ def main():
         # Prepend style right before generation
         full_prompt_text = f"{style_desc}, {prompt_text}" if style_desc else prompt_text
 
-        if generate_video:
+        if generate_video and _is_ltx_model(VIDEO_MODEL):
+            primary_ref = matched_refs[0] if matched_refs else None
+            if not primary_ref:
+                print(f"  Skipping LTX clip {clip_num}: no reference image found")
+                results.append((clip_num, False))
+                continue
+            clip_path = generate_ltx_clip(full_prompt_text, clip_num, primary_ref, clips_dir)
+        elif generate_video:
             clip_path = generate_video_clip(
                 full_prompt_text, clip_num, matched_refs, clips_dir
             )
