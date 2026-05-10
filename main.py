@@ -33,7 +33,7 @@ def refocus_web_app(cdp_port=9222):
 app = Flask(__name__)
 
 VIDEOS_DIR = "/home/henry/APPS/YTVideos/videos"
-VERSION = "v5.06"
+VERSION = "v5.13"
 
 STYLE_DESCRIPTIONS = {
     "3D Render": "Clean, modern 3D CGI render. Smooth surfaces, precise geometry, studio-quality lighting with soft shadows. Polished and professional digital art look.",
@@ -199,9 +199,8 @@ HTML = r"""
                     <option value="v1-5-pruned-emaonly.safetensors">SD 1.5</option>
                     <option value="flux1-dev.safetensors">Flux 1 Dev</option>
                     <option value="flux1-schnell.safetensors">Flux 1 Schnell</option>
-                    <option value="flux1-schnell-fp8.safetensors">Flux 1 Schnell fp8</option>
-                    <option value="flux1-dev-fp8-e4m3fn.safetensors">Flux 1 Dev fp8</option>
                     <option value="geminiproxy">GeminiProxy</option>
+                    <option value="google">Google Imagen</option>
                 </select>
             </h1>
             <div class="tab-bar">
@@ -234,6 +233,8 @@ HTML = r"""
                             <option value="fairy_tale">Fairy Tale</option>
                             <option value="adventure">Adventure</option>
                             <option value="educational">Educational</option>
+                            <option value="technology">Technology</option>
+                            <option value="explainer">Explainer</option>
                             <option value="fantasy">Fantasy</option>
                             <option value="comedy">Comedy</option>
                         </select>
@@ -1965,9 +1966,12 @@ def _generate_cref_images(project_dir, image_style, image_model):
         prompt = description
         output_path = os.path.join(project_dir, f"ref_{safe_name}.png")
 
-        if image_model == "geminiproxy":
+        if image_model in ("geminiproxy", "google"):
             _pipeline.push(f"  Generating CREF image: {char_name}...")
-            ok = _generate_image_geminiproxy(prompt, output_path, image_style)
+            if image_model == "google":
+                ok = _generate_image_google(prompt, output_path)
+            else:
+                ok = _generate_image_geminiproxy(prompt, output_path, image_style)
             if ok:
                 input_dir = "/home/henry/comfy/ComfyUI/input"
                 dst = os.path.join(input_dir, f"ref_{safe_name}.png")
@@ -1976,8 +1980,8 @@ def _generate_cref_images(project_dir, image_style, image_model):
                     print(f"  Saved: {dst}")
                 _pipeline.push(f"  ✓ {char_name} saved", "success")
             else:
-                _pipeline.push(f"  ⚠ GeminiProxy failed for {char_name} — is the gemini.google.com tab open in Chrome on CDP port 9222?", "error")
-                print(f"  GeminiProxy failed for {char_name}")
+                _pipeline.push(f"  ⚠ {image_model} failed for {char_name}", "error")
+                print(f"  {image_model} failed for {char_name}")
         else:
             if not _comfyui_available():
                 if not _start_comfyui():
@@ -3481,6 +3485,81 @@ def _capture_current_geminiproxy_image(output_path):
         return False
 
 
+GOOGLE_API_KEY = "AIzaSyCOB6-ofEbthCY9Igt0VD3ddm2qjWiUtws"
+
+
+class _GoogleImageGenerator:
+    """Google Imagen image generator — mirrors ContentCreator's GoogleImageGenerator."""
+
+    def __init__(self):
+        from google import genai
+        self.client = genai.Client(api_key=GOOGLE_API_KEY)
+        self.model = "imagen-3.0-generate-001"
+        self.discovered = False
+
+    def _discover_model(self):
+        if self.discovered:
+            return
+        try:
+            models = list(self.client.models.list())
+            imagen_models = [m.name for m in models if "imagen" in m.name.lower()]
+            if imagen_models:
+                preferences = [
+                    "imagen-4.0-generate-001", "imagen-4.0-ultra-generate-001", "imagen-4.0-fast-generate-001",
+                    "imagen-3.0-generate-001", "imagen-3.0-generate", "imagen-3.0", "imagen",
+                ]
+                found = False
+                for pref in preferences:
+                    for m in imagen_models:
+                        if pref == m.replace("models/", ""):
+                            self.model = pref
+                            found = True
+                            break
+                    if found:
+                        break
+                if not found:
+                    self.model = imagen_models[0].replace("models/", "")
+        except Exception:
+            pass
+        self.discovered = True
+
+    def generate_image(self, prompt, output_path):
+        from google.genai import types
+        if not self.discovered:
+            self._discover_model()
+        try:
+            response = self.client.models.generate_images(
+                model=self.model,
+                prompt=prompt,
+                config=types.GenerateImagesConfig(number_of_images=1, output_mime_type="image/jpeg"),
+            )
+            if not response.generated_images:
+                raise Exception("No images generated by Google Imagen (check safety filters)")
+            os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
+            with open(output_path, "wb") as f:
+                f.write(response.generated_images[0].image.image_bytes)
+            return True
+        except Exception as e:
+            if "404" in str(e) and self.model in ["imagen-3.0-generate-001", "imagen-4.0-generate-001"]:
+                self.discovered = False
+                self._discover_model()
+                if self.model not in ["imagen-3.0-generate-001", "imagen-4.0-generate-001"]:
+                    return self.generate_image(prompt, output_path)
+            print(f"  Google Imagen error: {e}")
+            return False
+
+
+_google_generator = None
+
+
+def _generate_image_google(prompt, output_path):
+    """Generate an image via Google Imagen API. Returns True on success."""
+    global _google_generator
+    if _google_generator is None:
+        _google_generator = _GoogleImageGenerator()
+    return _google_generator.generate_image(prompt, output_path)
+
+
 def _generate_thumbnail_image_geminiproxy(prompt, output_path, image_style=None):
     """Generate a thumbnail image via GeminiProxy CDP. Returns True on success."""
     import websocket as _ws
@@ -3737,6 +3816,12 @@ def _generate_thumbnail_and_metadata(
                 p.push(f"✓ Saved thumbnail.png", "success")
             else:
                 p.push("⚠ Thumbnail image generation failed", "info")
+        elif image_model == "google":
+            ok = _generate_image_google(image_prompt, thumb_path)
+            if ok:
+                p.push(f"✓ Saved thumbnail.png", "success")
+            else:
+                p.push("⚠ Google Imagen thumbnail generation failed", "info")
         else:
             # ComfyUI path — create a temp project dir with prompts.txt and project.json
             import shutil
@@ -4250,13 +4335,32 @@ def _generate_narration(
         with open(APP_PROMPT_LOG, "a") as f:
             f.write(f"[{ts}] {ai_helper}: {safe_prompt}\n")
         _ensure_key_service()
-        resp = requests.post(
-            f"{KEY_SERVICE_URL}/tmux/chat",
-            json={"text": f"claude: {prompt}", "timeout": 360},
-            timeout=370,
-        )
-        resp.raise_for_status()
-        full_content = resp.json().get("reply", "").strip()
+        result_box = [None]
+        error_box = [None]
+
+        def _do_request():
+            try:
+                r = requests.post(
+                    f"{KEY_SERVICE_URL}/tmux/chat",
+                    json={"text": f"claude: {prompt}", "timeout": 360},
+                    timeout=370,
+                )
+                r.raise_for_status()
+                result_box[0] = r.json().get("reply", "").strip()
+            except Exception as exc:
+                error_box[0] = exc
+
+        req_thread = threading.Thread(target=_do_request, daemon=True)
+        req_thread.start()
+        elapsed = 0
+        while req_thread.is_alive():
+            req_thread.join(timeout=15)
+            elapsed += 15
+            if req_thread.is_alive():
+                _pipeline.push(f"  ⏳ Waiting for Claude... ({elapsed}s)", "info")
+        if error_box[0]:
+            raise error_box[0]
+        full_content = result_box[0] or ""
         if not full_content:
             raise RuntimeError("key-service returned empty reply")
         _parse_narration_response(
@@ -4969,6 +5073,14 @@ def regenerate_cref():
                 shutil.copy2(
                     output_path, os.path.join(comfy_input, f"ref_{safe_name}.png")
                 )
+        elif image_model == "google":
+            ok = _generate_image_google(prompt, output_path)
+            if not ok:
+                return jsonify({"status": "error", "error": "Google Imagen failed"})
+            if os.path.exists(output_path) and os.path.isdir(comfy_input):
+                shutil.copy2(
+                    output_path, os.path.join(comfy_input, f"ref_{safe_name}.png")
+                )
         else:
 
             def _is_flux(m):
@@ -5236,10 +5348,15 @@ def regenerate_clip():
                 if not ok:
                     return jsonify({"status": "error", "error": "GeminiProxy failed"})
                 png_exists = os.path.exists(png_clip_path)
+            elif image_model == "google":
+                ok = _generate_image_google(gen_prompt, png_clip_path)
+                if not ok:
+                    return jsonify({"status": "error", "error": "Google Imagen failed"})
+                png_exists = os.path.exists(png_clip_path)
             # ComfyUI image-only handled below in the shared tmp_dir block
 
         # --- Video step (or image via ComfyUI) ---
-        if generate_video or (image_model != "geminiproxy" and not png_exists):
+        if generate_video or (image_model not in ("geminiproxy", "google") and not png_exists):
             tmp_dir = os.path.join(project_dir, f"_regen_{idx}")
             os.makedirs(tmp_dir, exist_ok=True)
             with open(config_path) as f:
