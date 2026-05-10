@@ -35,6 +35,7 @@ import shutil
 import json
 import base64
 import argparse
+import subprocess
 from PIL import Image
 import numpy as np
 
@@ -332,6 +333,27 @@ def generate_ltx_clip(prompt_text, clip_number, primary_image, output_dir):
     width, height = 768, 512
     frame_rate = 25
 
+    # Two-step I2V: generate a scene PNG first (if not already done), then use it
+    # as the I2V start frame. This ensures the video begins from the correct scene
+    # rather than the CREF image (which causes "camera pans away from portrait" motion).
+    png_clip_path = os.path.join(output_dir, f"clip_{clip_number:02d}.png")
+    comfyui_input_dir = "/home/henry/comfy/ComfyUI/input"
+    if not os.path.exists(png_clip_path):
+        print(f"  Scene PNG not found — generating it first (T2I step)...", flush=True)
+        if IMAGE_MODEL == "geminiproxy":
+            generated = generate_image_clip_geminiproxy(prompt_text, clip_number, output_dir)
+        else:
+            generated = generate_image_clip(prompt_text, clip_number, output_dir)
+        if not generated:
+            print(f"  T2I failed — falling back to CREF as start frame", flush=True)
+    if os.path.exists(png_clip_path):
+        start_image_name = f"scene_{clip_number:02d}.png"
+        shutil.copy2(png_clip_path, os.path.join(comfyui_input_dir, start_image_name))
+        print(f"  Using scene PNG as I2V start frame: {start_image_name}", flush=True)
+    else:
+        start_image_name = primary_image
+        print(f"  Using CREF as start frame: {start_image_name}", flush=True)
+
     # Match video length to audio duration if audio file exists
     audio_path = os.path.join(os.path.dirname(output_dir), "audio", f"line_{clip_number:02d}.mp3")
     length = 97  # default ~3.9s
@@ -349,12 +371,16 @@ def generate_ltx_clip(prompt_text, clip_number, primary_image, output_dir):
         except Exception as e:
             print(f"  Could not read audio duration, using default: {e}", flush=True)
 
-    # CheckpointLoaderSimple loads the full LTX model including built-in VAE
+    # LTX models live in diffusion_models, so use UNETLoader + separate VAELoader
     # T5 text encoder is loaded separately via CLIPLoader (type "ltxv")
     workflow = {
         "1": {
-            "class_type": "CheckpointLoaderSimple",
-            "inputs": {"ckpt_name": VIDEO_MODEL},
+            "class_type": "UNETLoader",
+            "inputs": {"unet_name": VIDEO_MODEL, "weight_dtype": "default"},
+        },
+        "15": {
+            "class_type": "VAELoader",
+            "inputs": {"vae_name": "ltx-video-vae-v0.9.5.safetensors"},
         },
         "2": {
             "class_type": "CLIPLoader",
@@ -362,7 +388,7 @@ def generate_ltx_clip(prompt_text, clip_number, primary_image, output_dir):
         },
         "4": {
             "class_type": "LoadImage",
-            "inputs": {"image": primary_image},
+            "inputs": {"image": start_image_name},
         },
         "5": {
             "class_type": "CLIPTextEncode",
@@ -384,13 +410,13 @@ def generate_ltx_clip(prompt_text, clip_number, primary_image, output_dir):
                 "frame_rate": frame_rate,
             },
         },
-        # LTXVImgToVideo encodes the start image — VAE comes from checkpoint output 2
+        # LTXVImgToVideo encodes the start image — VAE from dedicated VAELoader
         "8": {
             "class_type": "LTXVImgToVideo",
             "inputs": {
                 "positive": ["7", 0],
                 "negative": ["7", 1],
-                "vae": ["1", 2],
+                "vae": ["15", 0],
                 "image": ["4", 0],
                 "width": width,
                 "height": height,
@@ -411,7 +437,7 @@ def generate_ltx_clip(prompt_text, clip_number, primary_image, output_dir):
                 "terminal": 0.1,
             },
         },
-        # SamplerCustom drives the denoise loop — model from checkpoint output 0
+        # SamplerCustom drives the denoise loop — model from UNETLoader output 0
         "10": {
             "class_type": "SamplerCustom",
             "inputs": {
@@ -432,7 +458,7 @@ def generate_ltx_clip(prompt_text, clip_number, primary_image, output_dir):
         },
         "12": {
             "class_type": "VAEDecode",
-            "inputs": {"samples": ["10", 0], "vae": ["1", 2]},
+            "inputs": {"samples": ["10", 0], "vae": ["15", 0]},
         },
         "13": {
             "class_type": "CreateVideo",

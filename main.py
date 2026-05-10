@@ -33,7 +33,7 @@ def refocus_web_app(cdp_port=9222):
 app = Flask(__name__)
 
 VIDEOS_DIR = "/home/henry/APPS/YTVideos/videos"
-VERSION = "v5.03"
+VERSION = "v5.06"
 
 STYLE_DESCRIPTIONS = {
     "3D Render": "Clean, modern 3D CGI render. Smooth surfaces, precise geometry, studio-quality lighting with soft shadows. Polished and professional digital art look.",
@@ -1049,8 +1049,9 @@ HTML = r"""
                                 const vidId = `promptvid-${i}`;
                                 const imgCell = hasVideo
                                     ? `<div class="clip-card" style="margin:0;border:none;background:none;">
-                                          <video id="${vidId}" src="${clipUrl}" muted style="width:100%;border-radius:4px;"
-                                            onmouseenter="this.play()" onmouseleave="this.pause();this.currentTime=0;"></video>
+                                          <video id="${vidId}" src="${clipUrl}" muted style="width:100%;border-radius:4px;cursor:pointer;" title="Click to regenerate"
+                                            onmouseenter="this.play()" onmouseleave="this.pause();this.currentTime=0;"
+                                            onclick="regenerateClipImage(${i}, '${clipPng}')"></video>
                                           <div class="clip-label">${clipMp4}</div>
                                        </div>`
                                     : hasImage
@@ -1146,12 +1147,14 @@ HTML = r"""
             }
             _waitStyle.textContent = '* { cursor: wait !important; }';
             const imageModel = document.getElementById('image_model').value;
-            log(`Regenerating ${clipName} via ${imageModel}...`);
+            const generateVideo = document.getElementById('generate_video').checked;
+            const videoModel = document.getElementById('video_model').value;
+            log(`Regenerating ${clipName}${generateVideo ? ' + video' : ''}...`);
 
             fetch('/api/clip/regenerate', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({title, clip_name: clipName, prompt, index: idx, image_model: imageModel})
+                body: JSON.stringify({title, clip_name: clipName, prompt, index: idx, image_model: imageModel, generate_video: generateVideo, video_model: videoModel})
             })
             .then(r => {
                 if (!r.ok) return r.text().then(t => { throw new Error(`Server error ${r.status}: ${t.substring(0, 200)}`); });
@@ -1160,20 +1163,28 @@ HTML = r"""
             .then(data => {
                 document.getElementById('_waitCursorStyle').textContent = '';
                 if (data.status === 'ok') {
-                    const imageStyle = document.getElementById('image_style').value;
-                    log(`✓ Image regenerated using ${imageStyle}`, 'success');
+                    log(`✓ Clip regenerated`, 'success');
                     loadPromptLog();
-                    const newSrc = `/api/clip-image?title=${encodeURIComponent(title)}&name=${encodeURIComponent(clipName)}&_=${Date.now()}`;
+                    const ts = Date.now();
+                    // Derive base clip number from name (clip_05.png or clip_05.mp4)
+                    const baseName = clipName.replace(/\.(png|mp4)$/, '');
+                    const pngName = baseName + '.png';
+                    const mp4Name = baseName + '.mp4';
                     // Update prompts-table cell if present
                     if (cell) {
-                        const imgEl = cell.querySelector('img');
-                        if (imgEl) imgEl.src = newSrc;
-                        else cell.innerHTML = `<img src="${newSrc}" alt="${clipName}" onclick="regenerateClipImage(${idx}, '${clipName}')" style="cursor:pointer;" title="Click to regenerate image">`;
+                        if (generateVideo) {
+                            const videoSrc = `/api/clip-image?title=${encodeURIComponent(title)}&name=${encodeURIComponent(mp4Name)}&_=${ts}`;
+                            cell.innerHTML = `<div class="clip-card" style="margin:0;border:none;background:none;"><video src="${videoSrc}" muted style="width:100%;border-radius:4px;" onclick="regenerateClipImage(${idx}, '${pngName}')" title="Click to regenerate"></video></div>`;
+                            const v = cell.querySelector('video');
+                            v.addEventListener('mouseenter', e => e.target.play());
+                            v.addEventListener('mouseleave', e => { e.target.pause(); e.target.currentTime = 0; });
+                        } else {
+                            const imgSrc = `/api/clip-image?title=${encodeURIComponent(title)}&name=${encodeURIComponent(pngName)}&_=${ts}`;
+                            cell.innerHTML = `<img src="${imgSrc}" alt="${pngName}" onclick="regenerateClipImage(${idx}, '${pngName}')" style="cursor:pointer;" title="Click to regenerate">`;
+                        }
                     }
-                    // Update clips grid card if present
-                    document.querySelectorAll('.clip-card img').forEach(img => {
-                        if (img.alt === clipName) img.src = newSrc;
-                    });
+                    // Refresh clips grid
+                    loadClips(title);
                 } else {
                     log('✗ ' + (data.error || 'Failed to regenerate'), 'error');
                 }
@@ -1195,17 +1206,25 @@ HTML = r"""
                         container.innerHTML = '<p style="color:#888;">No clips found.</p>';
                         return;
                     }
-                    data.clips.forEach(c => {
+                    const videoOnly = document.getElementById('generate_video').checked;
+                    const clips = data.clips.filter(c => videoOnly ? c.endsWith('.mp4') : c.endsWith('.png'));
+                    if (clips.length === 0) {
+                        container.innerHTML = '<p style="color:#888;">No video clips yet.</p>';
+                        return;
+                    }
+                    clips.forEach(c => {
                         const card = document.createElement('div');
                         card.className = 'clip-card';
                         const url = `/api/clip-image?title=${encodeURIComponent(title)}&name=${encodeURIComponent(c)}`;
+                        const m = c.match(/(\d+)\.(png|mp4)/);
+                        const idx = m ? parseInt(m[1], 10) - 1 : -1;
                         if (c.endsWith('.mp4')) {
-                            card.innerHTML = `<video src="${url}" muted></video><div class="clip-label">${c}</div>`;
-                            card.querySelector('video').addEventListener('mouseenter', e => e.target.play());
-                            card.querySelector('video').addEventListener('mouseleave', e => { e.target.pause(); e.target.currentTime = 0; });
+                            card.innerHTML = `<video src="${url}" muted style="cursor:pointer;" title="Click to regenerate"></video><div class="clip-label">${c}</div>`;
+                            const v = card.querySelector('video');
+                            v.addEventListener('mouseenter', e => e.target.play());
+                            v.addEventListener('mouseleave', e => { e.target.pause(); e.target.currentTime = 0; });
+                            if (idx >= 0) v.onclick = () => regenerateClipImage(idx, c);
                         } else {
-                            const m = c.match(/clip_(\d+)\.png/);
-                            const idx = m ? parseInt(m[1], 10) - 1 : -1;
                             card.innerHTML = `<img src="${url}" alt="${c}" style="cursor:pointer;" title="Click to regenerate"><div class="clip-label">${c}</div>`;
                             if (idx >= 0) card.querySelector('img').onclick = () => regenerateClipImage(idx, c);
                         }
@@ -3729,6 +3748,7 @@ def _generate_thumbnail_and_metadata(
                 with open(os.path.join(project_dir, "project.json")) as _f:
                     thumb_cfg = json.load(_f)
             thumb_cfg["image_model"] = image_model
+            thumb_cfg["generate_video"] = False
             if image_style:
                 thumb_cfg["image_style"] = image_style
             with open(os.path.join(thumb_dir, "project.json"), "w") as _f:
@@ -4602,7 +4622,7 @@ def generate_narration():
     story_type = config.get("story_type", "children_story")
     ai_helper = config.get("ai_helper", "opencode")
     clip_count = config.get("clip_count", 0)
-    sentence_count = clip_count if clip_count and clip_count > 0 else None
+    sentence_count = clip_count if clip_count and clip_count > 0 else 30
     narration_path = os.path.join(project_dir, "narration.txt")
     step_narration = config.get("step_narration", True)
     step_prompts = config.get("step_prompts", True)
@@ -5192,50 +5212,74 @@ def regenerate_clip():
     with open(APP_PROMPT_LOG, "a") as f:
         f.write(f"[{ts}] {image_model}: {safe_gen_prompt}\n")
 
-    clip_path = os.path.join(project_dir, "clips", clip_name)
-    os.makedirs(os.path.dirname(clip_path), exist_ok=True)
+    generate_video = data.get("generate_video", False)
+    video_model = data.get("video_model", "")
+
+    # Derive real clip number from clip_name (e.g. clip_05.png → 5)
+    clip_num_match = re.search(r"(\d+)", clip_name)
+    clip_num = int(clip_num_match.group(1)) if clip_num_match else (idx + 1)
+
+    clips_dir = os.path.join(project_dir, "clips")
+    os.makedirs(clips_dir, exist_ok=True)
+    png_clip_path = os.path.join(clips_dir, f"clip_{clip_num:02d}.png")
+    mp4_clip_path = os.path.join(clips_dir, f"clip_{clip_num:02d}.mp4")
+
+    import shutil as _shutil
+
+    png_exists = os.path.exists(png_clip_path)
 
     try:
-        if image_model == "geminiproxy":
-            ok = _generate_thumbnail_image_geminiproxy(gen_prompt, clip_path)
-            if not ok:
-                return jsonify({"status": "error", "error": "GeminiProxy failed"})
-        else:
-            # ComfyUI path
-            import shutil
+        # --- Image step: skip if PNG already exists ---
+        if not png_exists:
+            if image_model == "geminiproxy":
+                ok = _generate_thumbnail_image_geminiproxy(gen_prompt, png_clip_path)
+                if not ok:
+                    return jsonify({"status": "error", "error": "GeminiProxy failed"})
+                png_exists = os.path.exists(png_clip_path)
+            # ComfyUI image-only handled below in the shared tmp_dir block
 
+        # --- Video step (or image via ComfyUI) ---
+        if generate_video or (image_model != "geminiproxy" and not png_exists):
             tmp_dir = os.path.join(project_dir, f"_regen_{idx}")
             os.makedirs(tmp_dir, exist_ok=True)
-            shutil.copy2(config_path, os.path.join(tmp_dir, "project.json"))
+            with open(config_path) as f:
+                cfg = json.load(f)
+            cfg["generate_video"] = generate_video
+            cfg["image_model"] = image_model
+            if video_model:
+                cfg["video_model"] = video_model
+            with open(os.path.join(tmp_dir, "project.json"), "w") as f:
+                json.dump(cfg, f)
             with open(os.path.join(tmp_dir, "prompts.txt"), "w") as f:
                 f.write(f"{gen_prompt}|||{title}\n")
-            # Copy reference images so generatevideo.py can find them
             for fname in os.listdir(project_dir):
                 if fname.startswith("ref_") and fname.endswith(".png"):
-                    shutil.copy2(
-                        os.path.join(project_dir, fname), os.path.join(tmp_dir, fname)
-                    )
+                    _shutil.copy2(os.path.join(project_dir, fname), os.path.join(tmp_dir, fname))
+            tmp_clips = os.path.join(tmp_dir, "clips")
+            os.makedirs(tmp_clips, exist_ok=True)
+            # Pre-seed PNG if it exists so generate_ltx_clip skips T2I and uses it as start frame
+            if png_exists:
+                _shutil.copy2(png_clip_path, os.path.join(tmp_clips, "clip_01.png"))
+            # Copy audio for duration matching
+            audio_src = os.path.join(project_dir, "audio", f"line_{clip_num:02d}.mp3")
+            if os.path.exists(audio_src):
+                os.makedirs(os.path.join(tmp_dir, "audio"), exist_ok=True)
+                _shutil.copy2(audio_src, os.path.join(tmp_dir, "audio", "line_01.mp3"))
 
-            # Use generate_video.py logic for single clip
             GEN_SCRIPT = "/home/henry/APPS/YTVideos/scripts/generatevideo.py"
-            subprocess.run(
-                ["python", GEN_SCRIPT, "--project-dir", tmp_dir, "--clips", "1"],
-                timeout=300,
-                check=True,
-            )
+            subprocess.run(["python", GEN_SCRIPT, "--project-dir", tmp_dir, "--clips", "1"], timeout=600, check=True)
 
-            generated = os.path.join(tmp_dir, "clips", "clip_01.png")
-            if os.path.exists(generated):
-                shutil.copy2(generated, clip_path)
-            else:
-                return jsonify(
-                    {"status": "error", "error": "ComfyUI failed to generate clip"}
-                )
-            shutil.rmtree(tmp_dir, ignore_errors=True)
+            generated_png = os.path.join(tmp_clips, "clip_01.png")
+            generated_mp4 = os.path.join(tmp_clips, "clip_01.mp4")
+            if os.path.exists(generated_png):
+                _shutil.copy2(generated_png, png_clip_path)
+            if os.path.exists(generated_mp4):
+                _shutil.copy2(generated_mp4, mp4_clip_path)
+            if not os.path.exists(generated_png) and not os.path.exists(generated_mp4):
+                return jsonify({"status": "error", "error": "Script failed to generate clip"})
+            _shutil.rmtree(tmp_dir, ignore_errors=True)
 
-        return jsonify(
-            {"status": "ok", "prompt": gen_prompt, "image_model": image_model}
-        )
+        return jsonify({"status": "ok", "prompt": gen_prompt, "image_model": image_model})
     except Exception as e:
         return jsonify({"status": "error", "error": str(e)})
 
