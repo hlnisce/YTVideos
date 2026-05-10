@@ -33,7 +33,7 @@ def refocus_web_app(cdp_port=9222):
 app = Flask(__name__)
 
 VIDEOS_DIR = "/home/henry/APPS/YTVideos/videos"
-VERSION = "v5.13"
+VERSION = "v5.17"
 
 STYLE_DESCRIPTIONS = {
     "3D Render": "Clean, modern 3D CGI render. Smooth surfaces, precise geometry, studio-quality lighting with soft shadows. Polished and professional digital art look.",
@@ -200,7 +200,6 @@ HTML = r"""
                     <option value="flux1-dev.safetensors">Flux 1 Dev</option>
                     <option value="flux1-schnell.safetensors">Flux 1 Schnell</option>
                     <option value="geminiproxy">GeminiProxy</option>
-                    <option value="google">Google Imagen</option>
                 </select>
             </h1>
             <div class="tab-bar">
@@ -3540,11 +3539,15 @@ class _GoogleImageGenerator:
                 f.write(response.generated_images[0].image.image_bytes)
             return True
         except Exception as e:
-            if "404" in str(e) and self.model in ["imagen-3.0-generate-001", "imagen-4.0-generate-001"]:
+            if "404" in str(e) and not getattr(self, "_retried", False):
+                prev_model = self.model
                 self.discovered = False
                 self._discover_model()
-                if self.model not in ["imagen-3.0-generate-001", "imagen-4.0-generate-001"]:
-                    return self.generate_image(prompt, output_path)
+                if self.model != prev_model:
+                    self._retried = True
+                    result = self.generate_image(prompt, output_path)
+                    self._retried = False
+                    return result
             print(f"  Google Imagen error: {e}")
             return False
 
@@ -3954,12 +3957,20 @@ def _generate_audio_and_assemble(project_dir, narration_path, voice_model, voice
         _run_tts_line(line, audio_path, voice_model, voice_rate, tts_provider, p, i, len(lines))
 
     # --- Step 2: combine each clip with its audio into a segment ---
-    all_clips = sorted(
+    # Deduplicate by clip number — prefer .mp4 over .png when both exist
+    _clip_by_num = {}
+    for _p in sorted(
         _glob.glob(os.path.join(clips_dir, "clip_*.png"))
-        + _glob.glob(os.path.join(clips_dir, "clip_*.mp4"))
         + _glob.glob(os.path.join(clips_dir, "image_*.png"))
+        + _glob.glob(os.path.join(clips_dir, "clip_*.mp4"))
         + _glob.glob(os.path.join(clips_dir, "image_*.mp4"))
-    )
+    ):
+        _m = re.search(r"(?:clip|image)_(\d+)", os.path.basename(_p))
+        if _m:
+            _n = _m.group(1)
+            if _n not in _clip_by_num or _p.endswith(".mp4"):
+                _clip_by_num[_n] = _p
+    all_clips = [_clip_by_num[k] for k in sorted(_clip_by_num)]
     if not all_clips:
         p.push("⚠ No clips found — skipping assembly", "error")
         return
@@ -4076,27 +4087,35 @@ def _generate_audio_and_assemble(project_dir, narration_path, voice_model, voice
                         "yuv420p",
                         segment_path,
                     ]
-            else:  # .mp4 video clip
-                cmd = [
-                    "ffmpeg",
-                    "-y",
-                    "-i",
-                    clip_path,
-                    "-i",
-                    audio_path,
-                    "-c:v",
-                    "libx264",
-                    "-preset",
-                    "ultrafast",
-                    "-c:a",
-                    "aac",
-                    "-b:a",
-                    "128k",
-                    "-shortest",
-                    "-pix_fmt",
-                    "yuv420p",
-                    segment_path,
-                ]
+            else:  # .mp4 video clip — loop video to cover full audio duration
+                try:
+                    dur_str = subprocess.check_output([
+                        "ffprobe", "-v", "error", "-show_entries", "format=duration",
+                        "-of", "default=noprint_wrappers=1:nokey=1", audio_path,
+                    ]).strip().decode()
+                    audio_dur = float(dur_str)
+                except Exception:
+                    audio_dur = None
+                if audio_dur:
+                    cmd = [
+                        "ffmpeg", "-y",
+                        "-stream_loop", "-1", "-i", clip_path,
+                        "-i", audio_path,
+                        "-t", f"{audio_dur:.3f}",
+                        "-c:v", "libx264", "-preset", "ultrafast",
+                        "-c:a", "aac", "-b:a", "128k",
+                        "-pix_fmt", "yuv420p",
+                        segment_path,
+                    ]
+                else:
+                    cmd = [
+                        "ffmpeg", "-y",
+                        "-i", clip_path, "-i", audio_path,
+                        "-c:v", "libx264", "-preset", "ultrafast",
+                        "-c:a", "aac", "-b:a", "128k",
+                        "-shortest", "-pix_fmt", "yuv420p",
+                        segment_path,
+                    ]
             subprocess.run(cmd, check=True, capture_output=True)
             segment_files.append(segment_path)
         except Exception as e:
@@ -5312,14 +5331,14 @@ def regenerate_clip():
             config = json.load(f)
             image_style = config.get("image_style", "Stick Figure")
 
-    gen_prompt = new_prompt
+    style_desc = STYLE_DESCRIPTIONS.get(image_style, "")
+    gen_prompt = f"{style_desc}, {new_prompt}" if style_desc else new_prompt
 
     # Log the image generation prompt
     from datetime import datetime
 
     ts = datetime.now().strftime("%H:%M:%S")
-    style_desc = STYLE_DESCRIPTIONS.get(image_style, "")
-    full_prompt_log = f"{style_desc}, {gen_prompt}" if style_desc else gen_prompt
+    full_prompt_log = gen_prompt
     safe_gen_prompt = full_prompt_log.replace("\n", " ").replace("\r", " ")
     with open(APP_PROMPT_LOG, "a") as f:
         f.write(f"[{ts}] {image_model}: {safe_gen_prompt}\n")

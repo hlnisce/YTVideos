@@ -882,11 +882,15 @@ class _GoogleImageGenerator:
                 f.write(response.generated_images[0].image.image_bytes)
             return True
         except Exception as e:
-            if "404" in str(e) and self.model in ["imagen-3.0-generate-001", "imagen-4.0-generate-001"]:
+            if "404" in str(e) and not getattr(self, "_retried", False):
+                prev_model = self.model
                 self.discovered = False
                 self._discover_model()
-                if self.model not in ["imagen-3.0-generate-001", "imagen-4.0-generate-001"]:
-                    return self.generate_image(prompt, output_path)
+                if self.model != prev_model:
+                    self._retried = True
+                    result = self.generate_image(prompt, output_path)
+                    self._retried = False
+                    return result
             print(f"  Google Imagen error: {e}", flush=True)
             return False
 
