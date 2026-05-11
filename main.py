@@ -33,7 +33,7 @@ def refocus_web_app(cdp_port=9222):
 app = Flask(__name__)
 
 VIDEOS_DIR = "/home/henry/APPS/YTVideos/videos"
-VERSION = "v5.17"
+VERSION = "v5.20"
 
 STYLE_DESCRIPTIONS = {
     "3D Render": "Clean, modern 3D CGI render. Smooth surfaces, precise geometry, studio-quality lighting with soft shadows. Polished and professional digital art look.",
@@ -398,6 +398,9 @@ HTML = r"""
                             </label>
                             <label style="font-size:13px; cursor:pointer; display:flex; align-items:center; gap:4px;">
                                 <input type="checkbox" id="step_assemble" checked style="width:auto;" /> Assemble
+                            </label>
+                            <label style="font-size:13px; cursor:pointer; display:flex; align-items:center; gap:4px;">
+                                <input type="checkbox" id="captions_enabled" style="width:auto;" /> Captions
                             </label>
                         </div>
                     </div>
@@ -1017,6 +1020,7 @@ HTML = r"""
                     document.getElementById('step_thumbnail').checked = data.step_thumbnail !== false;
                     document.getElementById('step_clips').checked = data.step_clips !== false;
                     document.getElementById('step_assemble').checked = data.step_assemble !== false;
+                    document.getElementById('captions_enabled').checked = data.captions_enabled === true;
                     toggleImageModel();
                 });
         }
@@ -1401,6 +1405,7 @@ HTML = r"""
                 step_thumbnail: document.getElementById('step_thumbnail').checked,
                 step_clips: document.getElementById('step_clips').checked,
                 step_assemble: document.getElementById('step_assemble').checked,
+                captions_enabled: document.getElementById('captions_enabled').checked,
             };
             
             log(`Saving config for: ${config.title}`);
@@ -3901,7 +3906,7 @@ def _run_tts_line(line, audio_path, voice_model, voice_rate, tts_provider, p, i,
                     p.push(f"  ✗ TTS line {i} failed after 3 attempts: {e}", "info")
 
 
-def _generate_audio_and_assemble(project_dir, narration_path, voice_model, voice_rate, tts_provider="edge"):
+def _generate_audio_and_assemble(project_dir, narration_path, voice_model, voice_rate, tts_provider="edge", captions_enabled=False, ai_helper="geminiproxy"):
     """Generate TTS audio per narration line then assemble final video with ffmpeg."""
     import glob as _glob
 
@@ -4087,20 +4092,25 @@ def _generate_audio_and_assemble(project_dir, narration_path, voice_model, voice
                         "yuv420p",
                         segment_path,
                     ]
-            else:  # .mp4 video clip — loop video to cover full audio duration
+            else:  # .mp4 video clip — slow down to match audio duration
                 try:
-                    dur_str = subprocess.check_output([
+                    audio_dur = float(subprocess.check_output([
                         "ffprobe", "-v", "error", "-show_entries", "format=duration",
                         "-of", "default=noprint_wrappers=1:nokey=1", audio_path,
-                    ]).strip().decode()
-                    audio_dur = float(dur_str)
+                    ]).strip().decode())
+                    video_dur = float(subprocess.check_output([
+                        "ffprobe", "-v", "error", "-show_entries", "format=duration",
+                        "-of", "default=noprint_wrappers=1:nokey=1", clip_path,
+                    ]).strip().decode())
                 except Exception:
-                    audio_dur = None
-                if audio_dur:
+                    audio_dur = video_dur = None
+                if audio_dur and video_dur and audio_dur > video_dur:
+                    # Stretch video to match audio (no loop, no jump)
+                    pts_factor = audio_dur / video_dur
                     cmd = [
                         "ffmpeg", "-y",
-                        "-stream_loop", "-1", "-i", clip_path,
-                        "-i", audio_path,
+                        "-i", clip_path, "-i", audio_path,
+                        "-vf", f"setpts={pts_factor:.6f}*PTS",
                         "-t", f"{audio_dur:.3f}",
                         "-c:v", "libx264", "-preset", "ultrafast",
                         "-c:a", "aac", "-b:a", "128k",
@@ -4125,7 +4135,99 @@ def _generate_audio_and_assemble(project_dir, narration_path, voice_model, voice
         p.push("⚠ No segments built — skipping final assembly", "error")
         return
 
-    # --- Step 3: concatenate all segments ---
+    # --- Step 3: build SRT if captions enabled ---
+    srt_path = None
+    if captions_enabled:
+        try:
+            p.push("Building captions SRT...")
+            # Read narration sentences from prompts.txt (text after |||)
+            prompts_path = os.path.join(project_dir, "prompts.txt")
+            sentences = []
+            if os.path.exists(prompts_path):
+                with open(prompts_path) as _pf:
+                    for _line in _pf:
+                        _line = _line.strip()
+                        if not _line or "=" in _line or "Video Generation" in _line:
+                            continue
+                        if "|||" in _line:
+                            sentences.append(_line.split("|||", 1)[1].strip())
+                        else:
+                            sentences.append(_line)
+
+            MAX_CAPTION_WORDS = 10
+            caption_cache_path = os.path.join(project_dir, "captions_cache.json")
+            caption_cache = {}
+            if os.path.exists(caption_cache_path):
+                try:
+                    with open(caption_cache_path) as _cf:
+                        caption_cache = json.load(_cf)
+                except Exception:
+                    pass
+
+            def _shorten(text, idx):
+                words = text.split()
+                if len(words) <= MAX_CAPTION_WORDS:
+                    return text
+                if text in caption_cache:
+                    return caption_cache[text]
+                # Ask AI to shorten
+                try:
+                    shortened = _call_ai(
+                        f"Shorten this sentence to under {MAX_CAPTION_WORDS} words for a video caption. Keep core meaning. Output ONLY the shortened sentence:\n\n{text}",
+                        ai_helper, timeout=30,
+                    )
+                    if shortened:
+                        w = shortened.strip().strip('"').split()
+                        if len(w) > MAX_CAPTION_WORDS:
+                            shortened = " ".join(w[:MAX_CAPTION_WORDS])
+                        result = shortened.strip()
+                        caption_cache[text] = result
+                        with open(caption_cache_path, "w") as _cf:
+                            json.dump(caption_cache, _cf, indent=2)
+                        return result
+                except Exception:
+                    pass
+                fallback = " ".join(words[:MAX_CAPTION_WORDS])
+                caption_cache[text] = fallback
+                with open(caption_cache_path, "w") as _cf:
+                    json.dump(caption_cache, _cf, indent=2)
+                return fallback
+
+            def _fmt_srt_time(secs):
+                h = int(secs // 3600)
+                m = int((secs % 3600) // 60)
+                s = int(secs % 60)
+                ms = int((secs - int(secs)) * 1000)
+                return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
+
+            srt_lines = []
+            cursor = 0.0
+            for i, seg_path in enumerate(segment_files):
+                try:
+                    seg_dur = float(subprocess.check_output([
+                        "ffprobe", "-v", "error", "-show_entries", "format=duration",
+                        "-of", "default=noprint_wrappers=1:nokey=1", seg_path,
+                    ]).strip().decode())
+                except Exception:
+                    seg_dur = 5.0
+                caption_text = sentences[i] if i < len(sentences) else ""
+                if caption_text:
+                    caption_text = _shorten(caption_text, i)
+                    srt_lines.append(str(i + 1))
+                    srt_lines.append(f"{_fmt_srt_time(cursor)} --> {_fmt_srt_time(cursor + seg_dur)}")
+                    srt_lines.append(caption_text)
+                    srt_lines.append("")
+                cursor += seg_dur
+
+            srt_path = os.path.join(project_dir, "captions.srt")
+            with open(srt_path, "w") as _sf:
+                _sf.write("\n".join(srt_lines))
+            p.push(f"  ✓ captions.srt written ({len(segment_files)} entries)")
+        except Exception as e:
+            p.push(f"  ⚠ Caption SRT failed: {e} — assembling without captions", "info")
+            srt_path = None
+
+    # --- Step 4: concatenate all segments ---
     concat_list = os.path.join(audio_dir, "concat.txt")
     with open(concat_list, "w") as f:
         for seg in segment_files:
@@ -4133,25 +4235,32 @@ def _generate_audio_and_assemble(project_dir, narration_path, voice_model, voice
 
     p.push(f"Assembling {len(segment_files)} segments → output.mp4...")
     try:
-        subprocess.run(
-            [
-                "ffmpeg",
-                "-y",
-                "-f",
-                "concat",
-                "-safe",
-                "0",
-                "-i",
-                concat_list,
-                "-c",
-                "copy",
-                "-movflags",
-                "+faststart",
-                output_path,
-            ],
-            check=True,
-            capture_output=True,
-        )
+        if srt_path and os.path.exists(srt_path):
+            # Encode with subtitle burn-in (re-encode video)
+            escaped_srt = srt_path.replace("'", "\\'").replace(":", "\\:")
+            font_size = max(12, int(1280 * 0.04 * 0.3))
+            subprocess.run(
+                [
+                    "ffmpeg", "-y",
+                    "-f", "concat", "-safe", "0", "-i", concat_list,
+                    "-vf", f"subtitles='{escaped_srt}':force_style='FontSize={font_size}'",
+                    "-c:v", "libx264", "-preset", "ultrafast",
+                    "-c:a", "aac", "-b:a", "128k",
+                    "-movflags", "+faststart",
+                    output_path,
+                ],
+                check=True, capture_output=True,
+            )
+        else:
+            subprocess.run(
+                [
+                    "ffmpeg", "-y",
+                    "-f", "concat", "-safe", "0", "-i", concat_list,
+                    "-c", "copy", "-movflags", "+faststart",
+                    output_path,
+                ],
+                check=True, capture_output=True,
+            )
         p.push(f"✓ output.mp4 assembled ({len(segment_files)} clips)", "success")
     except Exception as e:
         p.push(f"✗ Assembly failed: {e}", "error")
@@ -4621,6 +4730,7 @@ def _run_pipeline(
     step_clips=True,
     step_assemble=True,
     summary=None,
+    captions_enabled=False,
 ):
     """Background thread: generate narration → prompts → video."""
     p = _pipeline
@@ -4708,7 +4818,9 @@ def _run_pipeline(
                 tts_provider = "comfyui"
                 voice_model = voice_model[len("comfyui:"):]
             _generate_audio_and_assemble(
-                project_dir, narration_path, voice_model, voice_rate, tts_provider=tts_provider
+                project_dir, narration_path, voice_model, voice_rate,
+                tts_provider=tts_provider, captions_enabled=captions_enabled,
+                ai_helper=ai_helper,
             )
         else:
             p.push("⊘ Skipping Assemble", "info")
@@ -4752,6 +4864,7 @@ def generate_narration():
     step_thumbnail = config.get("step_thumbnail", True)
     step_clips = config.get("step_clips", True)
     step_assemble = config.get("step_assemble", True)
+    captions_enabled = config.get("captions_enabled", False)
     summary = config.get("summary", "")
 
     _pipeline.running = True
@@ -4772,6 +4885,7 @@ def generate_narration():
             step_clips,
             step_assemble,
             summary,
+            captions_enabled,
         ),
         daemon=True,
     )
